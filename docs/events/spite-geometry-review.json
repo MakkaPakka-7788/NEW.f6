@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "scope": "One exact reviewed trusted Spite geometry exception; historical UI review, physics, track assets and engine digest remain unchanged.",
+  "engineDigest": "7cd54f05e02b66c67133fd856f025c829c21d600d8ef6a9071df62b4fb5905c4",
+  "previousReview": "docs/events/opponent-shortcut-ui-engine-review.json",
+  "previousReviewSha256": "f861b46be777bc51763811c06fa95e45d44828443d62c96261bf681ec7d610a3",
+  "previousGeometryRowsSha256": "bf972170b586b5b84279c0b051e5c3f31235387afd226dfed1f07c3dddc06b1f",
+  "currentGeometryRowsSha256": "3f56ae47e4ad30dbedc0280fbaa820d67f4dba249de411caf723a5ec0d640f99",
+  "addedTracks": [
+    {
+      "id": "60e247f90d43ecaa8b56a4677307094ab0259f36151af23e09fdc824741d3e48",
+      "name": "trusted/60e247f90d43ecaa8b56a4677307094ab0259f36151af23e09fdc824741d3e48.track",
+      "hash": "a6ccd78cc443cd848a41da11d94904d2fffb7647d0ecafca64562eb53480ea2b",
+      "parts": 28470,
+      "spanX": 656,
+      "spanZ": 516,
+      "displayName": "Spite"
+    }
+  ],
+  "geometryValidatorSha256": "045a7d9897a8083e806c7517222bae3f812e6510371b009620b30a986f8295b1"
+}

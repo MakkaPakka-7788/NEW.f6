@@ -128,7 +128,9 @@ test('opponent review proves two UI insertions are the entire bundle change and 
  assert.equal(sha(JSON.stringify(previousFiles)),review.previousEngine,'all other engine file pins are unchanged');
  assert.equal(sha(fs.readFileSync(new URL(review.previousReview,root),'utf8').replace(/\r\n?/g,'\n')),review.previousReviewSha256,'prior review is immutable');
  assert.equal(sha(JSON.stringify(Object.entries(manifest.tracks).sort(([a],[b])=>a<b?-1:a>b?1:0))),review.trackPinsSha256);
- assert.equal(sha(JSON.stringify(geometry.tracks)),review.geometryRowsSha256);
+ const geometryReview=JSON.parse(fs.readFileSync(new URL('docs/events/spite-geometry-review.json',root),'utf8'));
+ const added=new Set(geometryReview.addedTracks.map(row=>row.id));
+ assert.equal(sha(JSON.stringify(geometry.tracks.filter(row=>!added.has(row.id)))),review.geometryRowsSha256,'historical UI review geometry is unchanged');
  for(const [name,digest] of Object.entries(review.unchangedSimulationAssets))assert.equal(manifest.files[name],digest);
  assert.equal(sha(bundle),review.currentMainBundleSha256);
  assert.equal(review.normalizedUiInsertions.length,2);
@@ -140,6 +142,23 @@ test('opponent review proves two UI insertions are the entire bundle change and 
  for(const insertion of review.normalizedUiInsertions){assert.equal(bundle.split(insertion).length,2);bundle=bundle.replace(insertion,'');}
  assert.equal(sha(bundle),review.previousMainBundleSha256);
  assert.equal(VERIFICATION_BOOTSTRAP_ID,'verification_snapshot_v3_'+VERIFIER_VERSION+'_46aba6e247567f5954d412e0988e3d2cd04e9ec154c294bdf3fcaa830d9d12f3');
+});
+
+test('later Spite geometry review adds exactly one bound exception without rewriting historical engine proof',async()=>{
+ const fs=await import('node:fs'),{createHash}=await import('node:crypto');
+ const root=new URL('../../../',import.meta.url),sha=value=>createHash('sha256').update(value).digest('hex');
+ const proof=JSON.parse(fs.readFileSync(new URL('docs/events/spite-geometry-review.json',root),'utf8'));
+ const geometry=JSON.parse(fs.readFileSync(new URL('tools/verifier/track-geometry.json',root),'utf8'));
+ const priorText=fs.readFileSync(new URL('docs/events/opponent-shortcut-ui-engine-review.json',root),'utf8').replace(/\r\n?/g,'\n');
+ assert.equal(proof.schemaVersion,1);assert.equal(proof.engineDigest,VERIFIER_ENGINE_DIGEST);
+ assert.equal(proof.previousReview,'docs/events/opponent-shortcut-ui-engine-review.json');assert.equal(sha(priorText),proof.previousReviewSha256);
+ assert.equal(proof.previousGeometryRowsSha256,JSON.parse(priorText).geometryRowsSha256);
+ const id='60e247f90d43ecaa8b56a4677307094ab0259f36151af23e09fdc824741d3e48';
+ assert.deepEqual(proof.addedTracks,[{id,name:'trusted/'+id+'.track',hash:'a6ccd78cc443cd848a41da11d94904d2fffb7647d0ecafca64562eb53480ea2b',parts:28470,spanX:656,spanZ:516,displayName:'Spite'}]);
+ assert.deepEqual(geometry.tracks.filter(row=>row.id===id),proof.addedTracks);
+ assert.equal(sha(JSON.stringify(geometry.tracks.filter(row=>row.id!==id))),proof.previousGeometryRowsSha256);
+ assert.equal(sha(JSON.stringify(geometry.tracks)),proof.currentGeometryRowsSha256);
+ assert.equal(sha(fs.readFileSync(new URL('tools/verifier/geometry.cjs',root),'utf8').replace(/\r\n?/g,'\n')),proof.geometryValidatorSha256);
 });
 
 
