@@ -2,10 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import {pathToFileURL} from 'node:url';
 import {generatedNameAt,generatedNameStats,generateFallbackName,generatePublicName,moderatePublicName} from '../workers/ranked/src/public-name-policy.js';
 
+const integrationRoot = process.env.NAME_POLICY_SOURCE_ROOT
+  ? pathToFileURL(process.env.NAME_POLICY_SOURCE_ROOT.replace(/\\/g, '/') + '/')
+  : new URL('../', import.meta.url);
+const ORIGINAL_FIRST_WORDS = Object.freeze(["swift","neon","alpha","turbo","sonic","pixel","nova","lucky","sunny","frost","ember","quantum","crystal","midnight","solar","lunar","hyper","ultra","aero","rapid","vivid","thunder","cosmic","silver","golden","shadow","arc","vector","iron","onyx","starlit","cobalt","ripple","granite","jungle","desert","arctic","magenta","scarlet","violet","teal","sable","amber","jade","ivory","obsidian","cinder","stellar","orbital","zen","rogue","prime","apex","summit","embered","misty","horizon","aurora","glitch","byte","laser","prism","halo","north","south","east","west","tempo","axle","torque","nitro","clutch","summoner","phantom","eclipse","cyclone","monsoon","titan","pegasus","raven","falcon","lynx","otter","comfy","bouncy","cheery","zippy","daring","brisk","fuzzy","mellow","witty","snappy","goofy","wobbly","noodle","waffle","jelly","marshmallow","bubble","pickled","crispy","crunchy","squishy","squeaky","sleepy","dizzy","giggly","jolly","jazzy","groovy","funky","disco","dapper","fluffy","feisty","fizzy","breezy","toasty","chilly","frosty","spicy","tangy","minty","peachy","plucky","perky","peppy","spry","sneaky","silly","quirky","wonky","wiggly","wobble","taffy","mochi","mango","banana","coconut","pineapple","popcorn","biscuit","donut","cupcake","pretzel","pancake","pudding","confetti","rainbow","sprinkles","stardust","moonlit","sunlit","twinkly","sparkly","electric","velvety","whimsical","rubbery"]);
+const ORIGINAL_SECOND_WORDS = Object.freeze(["racer","drift","pulse","track","echo","comet","storm","shift","vault","spark","dash","glide","runner","rocket","flare","nexus","voyage","blaze","orbit","flux","drive","streak","zenith","quartz","radar","pilot","charger","phantom","matrix","engine","jumper","hopper","sprinter","raider","seeker","keeper","walker","slider","cruiser","strider","booster","chaser","panther","falcon","otter","fox","rhino","yak","wizard","knight","samurai","sage","ranger","captain","doctor","baron","duke","rookie","veteran","legend","maverick","stomper","breaker","spirit","beacon","anchor","vector","module","kernel","vortex","quasar","galaxy","planet","meteor","asteroid","volcano","tsunami","whirl","tempest","charge","vertex","pixel","bit","byte","gear","piston","engineer","driver","rider","climber","surfer","skater","sniper","ace","waffle","noodle","dumpling","pancake","muffin","biscuit","donut","pretzel","taco","burrito","pickle","potato","pumpkin","coconut","pineapple","mango","mochi","marshmallow","popcorn","pudding","jellybean","cupcake","bagel","crumpet","croissant","raccoon","capybara","penguin","puffin","axolotl","gecko","koala","panda","wombat","platypus","duck","goose","flamingo","pelican","toucan","alpaca","llama","narwhal","dolphin","walrus","seal","badger","hedgehog","hamster","chinchilla","squirrel","ferret","dragon","griffin","yeti","goblin","gremlin","gnome","jester","astronaut","explorer","cartographer","tinkerer","tuba","kazoo","ukulele"]);
+
 test('existing client arrays have 8742 distinct reachable names, all preserved in the expanded vocabulary',async()=>{
-  const client=await fs.readFile(new URL('../polytrack_062_patch.js',import.meta.url),'utf8');
+  const client=await fs.readFile(new URL('polytrack_062_patch.js',integrationRoot),'utf8');
   const words=suffix=>JSON.parse(client.match(new RegExp('const PROFILE_NAME_WORD_'+suffix+' = (\\[[^;]+\\]);'))[1].replaceAll("'",'"'));
   const a=words('A'),b=words('B');
   assert.equal(a.length,93);
@@ -17,7 +24,7 @@ test('existing client arrays have 8742 distinct reachable names, all preserved i
   assert.equal(period,113646);
   assert.equal(before.size,8742);
   const after=new Set(Array.from({length:generatedNameStats.combinations},(_,i)=>generatedNameAt(i)));
-  assert.equal(after.size,25600);
+  assert.equal(after.size,147456);
   for(const name of before)assert.ok(after.has(name),name);
   for(const name of before)assert.equal(moderatePublicName(name).blocked,false,name);
   const legacy=seed=>{
@@ -28,7 +35,7 @@ test('existing client arrays have 8742 distinct reachable names, all preserved i
 });
 
 test('proposed integration keeps saved defaults and legacy fallbacks, expanding only new defaults',async()=>{
-  const source=await fs.readFile(new URL('../polytrack_062_patch.js',import.meta.url),'utf8');
+  const source=await fs.readFile(new URL('polytrack_062_patch.js',integrationRoot),'utf8');
   const begin=source.indexOf('  function getOrCreateDefaultDisplayName(');
   const end=source.indexOf('\n  async function enforceSafeDisplayName',begin);
   assert.ok(begin>=0 && end>begin);
@@ -49,4 +56,26 @@ test('proposed integration keeps saved defaults and legacy fallbacks, expanding 
   assert.deepEqual(run('Custom Handle',{generatePublicName}),{name:'Custom Handle',writes:0});
   assert.deepEqual(run('Guest',{generatePublicName}),{name:generatePublicName('account-a'),writes:1});
   assert.deepEqual(run('',undefined),{name:generateFallbackName('account-a'),writes:1});
+});
+
+
+test('all 160 original word indices and 25,600 base outputs remain reachable',async()=>{
+  const source=await fs.readFile(new URL('../workers/ranked/src/public-name-policy.js',import.meta.url),'utf8');
+  const words=letter=>JSON.parse(source.match(new RegExp('const PROFILE_NAME_WORD_'+letter+' = Object\\.freeze\\((\\[[^;]+?\\])\\);'))[1]);
+  assert.deepEqual(words('A').slice(0,160),ORIGINAL_FIRST_WORDS);
+  assert.deepEqual(words('B').slice(0,160),ORIGINAL_SECOND_WORDS);
+  assert.equal(words('A').length,384);
+  assert.equal(words('B').length,384);
+  for(let a=0;a<160;a++)for(let b=0;b<160;b++)assert.equal(
+    generatedNameAt(a*generatedNameStats.secondWords+b),ORIGINAL_FIRST_WORDS[a]+ORIGINAL_SECOND_WORDS[b]);
+});
+
+test('expanded output space has no exact or case-fold collisions',()=>{
+  const names=new Set(),folded=new Set();
+  for(let index=0;index<generatedNameStats.combinations;index++){
+    const name=generatedNameAt(index);names.add(name);folded.add(name.toLowerCase());
+  }
+  assert.deepEqual(generatedNameStats,{firstWords:384,secondWords:384,combinations:147456});
+  assert.equal(names.size,147456);
+  assert.equal(folded.size,147456);
 });

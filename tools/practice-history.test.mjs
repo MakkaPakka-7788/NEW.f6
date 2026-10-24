@@ -51,9 +51,9 @@ test('clear removes only the requested racers practice, not PBs or another accou
  assert.equal(h.history.get(account,track),null);assert.equal(h.history.get(other,track).bestMs,200);
 });
 test('corrupt and excessive saved history is bounded and sanitized',()=>{
- const accounts={};for(let a=0;a<8;a++){const tracks={};for(let t=0;t<300;t++)tracks[t.toString(16).padStart(64,'0')]={attempts:'bad',activeMs:-1};accounts[a.toString(16).padStart(64,'0')]=tracks;}
+ const accounts={};for(let a=0;a<8;a++){const tracks={};for(let t=0;t<1200;t++)tracks[t.toString(16).padStart(64,'0')]={attempts:'bad',activeMs:-1};accounts[a.toString(16).padStart(64,'0')]=tracks;}
  let saved;const history=createPracticeHistory({storage:{getItem:()=>JSON.stringify({version:1,accounts}),setItem:(_key,value)=>saved=value}});history.begin(account,track).finish(100);history.flush(true);
- const parsed=JSON.parse(saved);assert.ok(Object.keys(parsed.accounts).length<=4);for(const tracks of Object.values(parsed.accounts))assert.ok(Object.keys(tracks).length<=256);
+ const parsed=JSON.parse(saved);assert.ok(Object.keys(parsed.accounts).length<=4);for(const tracks of Object.values(parsed.accounts))assert.ok(Object.keys(tracks).length<=1024);
 });
 test('practice is only a bounded hint and sparse data never claims a track is impossible',()=>{
  assert.deepEqual(practiceAdvice(null),{factor:1,text:''});assert.equal(practiceAdvice({attempts:1,activeMs:900000}).factor,1);
@@ -265,4 +265,19 @@ test('asynchronous first placement survives immediate reload without another dri
  const restored=createPracticeHistory({storage,now:()=>at});
  assert.deepEqual(restored.get(account,track).firstPlacement,evidence);
  assert.equal(restored.get(account,track).finishes,1);
+});
+
+test('local changes notify subscribers and retain real epoch dates across reloads',()=>{
+ let at=Date.UTC(2026,9,24),saved=null,callbacks=0,subscribed=0;
+ const storage={getItem:()=>saved,setItem:(_key,value)=>saved=value};
+ const h=createPracticeHistory({storage,now:()=>at,onChange:()=>callbacks++});
+ const unsubscribe=h.subscribe(()=>subscribed++),a=h.begin(account,track,20000);
+ a.tick(1000);at+=1000;a.finish(19000);a.leave();h.flush(true);
+ assert.ok(callbacks>0);assert.equal(subscribed,callbacks);
+ const before=subscribed;unsubscribe();h.observeBest(account,track,18000);
+ assert.equal(subscribed,before);assert.ok(callbacks>before);
+ h.flush(true);const row=createPracticeHistory({storage,now:()=>at}).get(account,track);
+ assert.equal(row.lastPlayedAt,at);assert.equal(row.activeMs,1000);
+ assert.equal(row.finishes,1);assert.equal(row.biggestPbImprovementMs,1000);
+ assert.equal(row.biggestObservedImprovementMs,1000);assert.equal(row.bestMs,18000);
 });

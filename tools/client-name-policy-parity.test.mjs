@@ -2,8 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
+import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
 import {buildNamePolicy} from './build-name-policy.mjs';
 import {moderatePublicName,generatePublicName,generateFallbackName,generatedNameAt,generatedNameStats} from '../workers/ranked/src/public-name-policy.js';
+
+const integrationRoot = process.env.NAME_POLICY_SOURCE_ROOT
+  ? pathToFileURL(process.env.NAME_POLICY_SOURCE_ROOT.replace(/\\/g, '/') + '/')
+  : new URL('../', import.meta.url);
 
 test('generated browser decisions match the server policy exactly', async () => {
   await buildNamePolicy({check:true});
@@ -20,10 +26,10 @@ test('generated browser decisions match the server policy exactly', async () => 
 });
 
 test('the shared policy is loaded before the client patch',async()=>{
-  const html=await fs.readFile(new URL('../index.html',import.meta.url),'utf8');
+  const html=await fs.readFile(new URL('index.html',integrationRoot),'utf8');
   assert(html.indexOf('./public-name-policy.js?')>=0);
   assert(html.indexOf('./public-name-policy.js?')<html.indexOf('./polytrack_062_patch.js?'));
-  const client=await fs.readFile(new URL('../polytrack_062_patch.js',import.meta.url),'utf8');
+  const client=await fs.readFile(new URL('polytrack_062_patch.js',integrationRoot),'utf8');
   assert.match(client,/__polytrackNamePolicy\.moderatePublicName\(value\)/);
 });
 
@@ -35,4 +41,17 @@ test('browser generated-name API matches the worker',async()=>{
   for(let i=0;i<generatedNameStats.combinations;i++)assert.equal(api.generatedNameAt(i),generatedNameAt(i));
   for(const seed of ['account-a','account-b','',null,'😀'])assert.equal(api.generatePublicName(seed),generatePublicName(seed));
   for(const seed of ['account-a','account-b','',null,'😀'])assert.equal(api.generateFallbackName(seed),generateFallbackName(seed));
+});
+
+
+test('browser bundle identifies exactly the shared source and keeps API fields stable',async()=>{
+  const source=(await fs.readFile(new URL('../workers/ranked/src/public-name-policy.js',import.meta.url),'utf8')).replace(/\r\n?/g,'\n');
+  const digest=createHash('sha256').update(source).digest('hex');
+  const context=vm.createContext({});
+  vm.runInContext(await fs.readFile(new URL('../public-name-policy.js',import.meta.url),'utf8'),context);
+  assert.equal(context.__polytrackNamePolicy.sourceSha256,digest);
+  assert.deepEqual(Object.keys(context.__polytrackNamePolicy).sort(),[
+    'moderatePublicName','normalizeNameForCheck','sanitizeDisplayName','safePublicName',
+    'generatePublicName','generateFallbackName','generatedNameAt','generatedNameStats','sourceSha256'
+  ].sort());
 });

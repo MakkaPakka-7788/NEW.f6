@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {deflateSync} from 'node:zlib';
 import {exportPublicProfilesAndReplays} from './public-profile-replay-export.mjs';
 const accountId='a'.repeat(64), trackId='b'.repeat(64), otherAccount='c'.repeat(64);
 const replay='fixture-replay-payload', replayHash=createHash('sha256').update(replay).digest('hex');
@@ -36,6 +37,47 @@ function fixtureFetch(handler,requests=[]){return async(url,options)=>{
   return{ok:true,status:200,text:async()=>JSON.stringify(await handler(request))};};}
 const emptyProfiles=[{readTime:'2026-10-06T00:00:00Z'}];
 const batchResponse=(request,fields=raceFields())=>request.options.documents.map(name=>({found:{name,fields}}));
+
+test('opt-in pending public canonical replay exports bounded playback without a verified badge or private fields',async()=>{
+ await withDirectory(async directory=>{
+  const pendingReplay=deflateSync(Buffer.alloc(15)).toString('base64url');
+  const pendingHash=createHash('sha256').update(pendingReplay).digest('hex');
+  await stage(directory,[binding({runVerified:false,verified:false,verifiedState:0,replayHash:pendingHash})]);
+  const requests=[],fetchImpl=fixtureFetch(req=>batchResponse(req,raceFields({replay:str(pendingReplay),replayHash:str(pendingHash)})),requests);
+  await exportPublicProfilesAndReplays({directory,includeProfiles:false,fetchImpl});assert.equal(requests.length,0);
+  await exportPublicProfilesAndReplays({directory,includeProfiles:false,includePendingReplays:true,fetchImpl});
+  const saved=JSON.parse(await fs.readFile(path.join(directory,'recordings/42.json')));
+  const canonical=JSON.parse(await fs.readFile(path.join(directory,`canonical/${trackId}/${accountId}.json`)));
+  assert.equal(saved.verifiedState,0);assert.equal(saved.playbackPending,true);assert.equal(canonical.verified,false);
+  assert.equal(canonical.runVerified,false);assert.equal(canonical.eventRpEligible,false);assert.equal(canonical.proof,undefined);
+  assert.equal(canonical.ownerUid,undefined);assert.equal(canonical.verificationStatus,'pending');
+  assert.equal(requests.length,1);
+  const reused=await exportPublicProfilesAndReplays({directory,includeProfiles:false,includePendingReplays:true,fetchImpl});
+  assert.equal(requests.length,1,'unchanged pending replay pair must not spend another read');
+  assert.equal(reused.fetchedDocumentsThisRun,0);
+ });
+});
+
+test('terminal public board rows never enter replay export even when pending playback is enabled',async()=>{
+ await withDirectory(async directory=>{
+  await stage(directory,[binding({runVerified:false,verified:false,verifiedState:0,verificationStatus:'rejected'})]);
+  const requests=[];
+  await exportPublicProfilesAndReplays({directory,includeProfiles:false,includePendingReplays:true,fetchImpl:fixtureFetch(req=>batchResponse(req),requests)});
+  assert.equal(requests.length,0);
+  await assert.rejects(fs.stat(path.join(directory,'recordings/42.json')),{code:'ENOENT'});
+ });
+});
+
+test('terminal status on a cached replay or canonical invalidates reuse',async()=>{
+ for(const target of ['recordings/42.json',`canonical/${trackId}/${accountId}.json`])await withDirectory(async directory=>{
+  await stage(directory,[binding()]);const requests=[],fetchImpl=fixtureFetch(req=>batchResponse(req),requests);
+  await exportPublicProfilesAndReplays({directory,includeProfiles:false,fetchImpl});
+  const filename=path.join(directory,target),cached=JSON.parse(await fs.readFile(filename));
+  await fs.writeFile(filename,JSON.stringify({...cached,verificationStatus:'rejected'}));
+  await exportPublicProfilesAndReplays({directory,includeProfiles:false,fetchImpl});
+  assert.equal(requests.length,2,'terminal cached projection cannot qualify as a reusable pair');
+ });
+});
 
 test('private progress larger than the public payload limit is saved rather than silently dropped',async()=>{
  await withDirectory(async directory=>{

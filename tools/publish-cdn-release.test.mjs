@@ -4,9 +4,9 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,mkdir,readFile,readdir} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {releasePlan,checkReleaseFiles,refreshReleasePointer,publishRelease,includeReleaseAsset,assertCdnAssetSizes,POINTER_URL,REPOSITORY} from './publish-cdn-release.mjs';
+import {releasePlan,checkReleaseFiles,refreshReleasePointer,publishRelease,publishAssetTree,includeReleaseAsset,assertCdnAssetSizes,POINTER_URL,POINTER_MIRRORS,REPOSITORY,validPurgeState} from './publish-cdn-release.mjs';
 
 const sha='a'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
 function fixture(){
@@ -16,7 +16,7 @@ function fixture(){
     'snapshot-current.json':JSON.stringify({currentdir:'public-snapshots1'}),
     'public-snapshots1/index.json':JSON.stringify({schemaVersion:1,generation:1,encoding:'gzip-xor-a7-v1',files:Object.fromEntries(['overall-manifest.json','overall-preview.json','overall-pages/1.json'].map(name=>[name,{path:id+'.bin',sha256:id,decodedBytes:payload.length}]))}),
     'public-snapshots1/bootstrap-fast.json':JSON.stringify({schemaVersion:1,generation:1,encoding:'gzip-xor-a7-v1',compactIndexVersion:1,partial:true,fallbackIndex:'index.json',files:Object.fromEntries(['overall-manifest.json','overall-preview.json','overall-pages/1.json'].map(name=>[name,[id,payload.length]]))}),
-    'tools/unique-profile-name.mjs':'/* atomic names */','tools/public-snapshot-client.mjs':'/* reader */','tools/snapshot-metadata-recovery.mjs':'/* metadata */','events/client.mjs':'/* events */',
+    'tools/overall-local-controller.mjs':'/* controller */','tools/overall-local-projection.mjs':'/* projection */','tools/practice-profile.mjs':'/* practice */','tools/unique-profile-name.mjs':'/* atomic names */','tools/public-snapshot-client.mjs':'/* reader */','tools/snapshot-metadata-recovery.mjs':'/* metadata */','events/client.mjs':'/* events */',
     ['public-snapshots1/'+id+'.bin']:payload,
     'site-version.json':'{}','main.bundle.js':'/* game */','polytrack_062_patch.js':'/* patch */','simulation_worker.bundle.js':'/* worker */','polytrack_physics.wasm':'wasm fixture'
   }).map(([k,v])=>[k,Buffer.from(v)]));
@@ -103,6 +103,18 @@ test('every CDN file, not only readiness probes, must be strictly below 20 MB',(
   assert.doesNotThrow(()=>assertCdnAssetSizes([{path:'large.bin',bytes:19999999}]));
   for(const bytes of [20000000,20000001,NaN,-1])assert.throws(()=>assertCdnAssetSizes([{path:'large.bin',bytes}]),/under 20,000,000/);
 });
+test('the full tar archive, including padding, must stay strictly below 49 MB before push',async()=>{
+  const calls=[];
+  await assert.rejects(publishAssetTree({pointer:{commit:sha,snapshotDirectory:'public-snapshots1'},files:[{path:'index.html'}]},args=>{
+    calls.push(args[0]);
+    if(args[0]==='ls-tree')return '100644 blob '+'b'.repeat(40)+' 1\tindex.html\0';
+    if(args[0]==='write-tree')return 'c'.repeat(40);
+    if(args[0]==='archive')return Buffer.alloc(49000000);
+    if(['read-tree','update-index'].includes(args[0]))return '';
+    assert.fail('archive rejection must precede remote or push: '+args[0]);
+  }),/49 MB/);
+  assert.ok(!calls.includes('push'));
+});
 test('a current loader pointer avoids redundant purges',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];
   const result=await refreshReleasePointer(expected,{sleep:async()=>{},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(expected));}});
@@ -112,7 +124,7 @@ test('purge success with stale pointer is not reported as success',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];let time=0;
   await assert.rejects(refreshReleasePointer(expected,{now:()=>time,log:()=>{},sleep:async ms=>{time+=ms;},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:{...expected,commit:'b'.repeat(40)}));}}),error=>error.code==='CDN_PROPAGATION_PENDING'&&error.purges===1);
   assert.equal(calls.filter(url=>url.includes('purge.jsdelivr.net')).length,1);
-  assert.ok(calls.length<=10);assert.ok(time<=240000);assert.ok(time>49000);
+  assert.ok(calls.length<=12);assert.equal(calls.filter(url=>POINTER_MIRRORS.includes(url)).length,2);assert.ok(time<=240000);assert.ok(time>49000);
 });
 
 test('delayed CDN propagation recovers beyond the old 49-second limit without repeated purging',async()=>{
@@ -139,7 +151,7 @@ test('finished purge with a throttled path defers honestly instead of claiming p
     calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?
       {status:'finished',paths:{[new URL(POINTER_URL).pathname]:{throttled:true,throttlingReset:2561}}}:{...expected,commit:'b'.repeat(40)}));
   }});
-  assert.equal(result.confirmed,false);assert.equal(result.status,'deferred');assert.equal(result.reason,'purge-throttled');assert.equal(result.retryAfterMs,2561000);assert.equal(calls.length,2);
+  assert.equal(result.confirmed,false);assert.equal(result.status,'deferred');assert.equal(result.reason,'purge-throttled');assert.equal(result.retryAfterMs,2561000);assert.equal(calls.length,4);
 });
 
 test('purge HTTP rate limiting is deferred without replaying captures or waiting out the cooldown',async()=>{
@@ -151,10 +163,10 @@ test('purge HTTP rate limiting is deferred without replaying captures or waiting
 
 test('an invalid or foreign pointer cannot become a successful release confirmation',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let calls=0;
-  for(const actual of [{...expected,repository:'another/repository'},{...expected,indexSha256:'bad'},null]){
+  for(const actual of [{...expected,repository:'another/repository'},{...expected,indexSha256:'bad'},{...expected,publishedAt:'invalid'},null]){
     await assert.rejects(refreshReleasePointer(expected,{fetchImpl:async()=>{calls++;return response(JSON.stringify(actual));}}),/Invalid CDN release pointer/);
   }
-  assert.equal(calls,3);
+  assert.equal(calls,4);
   await assert.rejects(refreshReleasePointer({...expected,commit:'main'},{fetchImpl:async()=>assert.fail('invalid expected pointer must not fetch')}),/Invalid expected/);
 });
 
@@ -162,6 +174,60 @@ test('source commit equality is checked even when immutable asset bytes are unch
   const expected={...(await releasePlan({commit:sha,...fixture()})).pointer,sourceCommit:'f'.repeat(40)};let reads=0;
   const result=await refreshReleasePointer(expected,{log:()=>{},sleep:async()=>{},fetchImpl:async url=>response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:++reads===1?{...expected,sourceCommit:'e'.repeat(40)}:expected))});
   assert.equal(reads,2);assert.equal(result.confirmed,true);
+});
+
+test('fresh mirrors cannot confirm a stale canonical loader URL',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let time=0;
+  await assert.rejects(refreshReleasePointer(expected,{now:()=>time,sleep:async ms=>{time+=ms;},log:()=>{},
+    fetchImpl:async url=>response(JSON.stringify(POINTER_MIRRORS.includes(url)?expected:url.includes('purge.')?{status:'finished'}:{...expected,commit:'b'.repeat(40)}))}),
+    error=>error.code==='CDN_PROPAGATION_PENDING'&&error.mirrors.length===2&&error.mirrors.every(row=>row.status==='current'));
+});
+
+test('obsolete authoritative pointer stops polling and purging, not falsely confirming replacement',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;
+  const result=await refreshReleasePointer(expected,{getCurrentPointer:async()=>({...expected,commit:'b'.repeat(40)}),
+    fetchImpl:async()=>assert.fail('obsolete pointer must not touch CDN'),sleep:async()=>assert.fail('obsolete job must stop')});
+  assert.equal(result.status,'superseded');assert.equal(result.confirmed,false);assert.equal(result.purges,0);
+});
+
+test('authority changing while the CDN request is in flight prevents stale confirmation',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let checks=0;
+  const result=await refreshReleasePointer(expected,{getCurrentPointer:async()=>++checks===1?expected:{...expected,commit:'b'.repeat(40)},fetchImpl:async()=>response(JSON.stringify(expected))});
+  assert.equal(result.status,'superseded');assert.equal(result.confirmed,false);assert.equal(checks,2);
+});
+
+test('unavailable pointer authority defers without pretending CDN content is current',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;
+  const result=await refreshReleasePointer(expected,{getCurrentPointer:async()=>{throw TypeError('Git transport unavailable');},fetchImpl:async()=>assert.fail('no CDN requests without authority')});
+  assert.equal(result.reason,'pointer-authority-unavailable');assert.equal(result.confirmed,false);
+});
+
+test('persisted provider cooldown skips purge but still checks the actual loader URL first',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer, calls=[];
+  const options={now:()=>1000,purgeState:{schemaVersion:1,pointerUrl:POINTER_URL,updatedAt:0,nextPurgeAt:3600000},
+    fetchImpl:async url=>{calls.push(url);assert.ok(!url.includes('purge.'));return response(JSON.stringify({...expected,commit:'b'.repeat(40)}));}};
+  const result=await refreshReleasePointer(expected,options);
+  assert.equal(result.status,'deferred');assert.equal(result.reason,'purge-cooldown');assert.equal(result.retryAfterMs,3599000);
+  assert.equal(calls[0],POINTER_URL);assert.equal(calls.length,3);
+  const fresh=await refreshReleasePointer(expected,{...options,fetchImpl:async()=>response(JSON.stringify(expected))});
+  assert.equal(fresh.confirmed,true);
+});
+
+test('hour-long Retry-After is persisted intact instead of clamped to asset retry duration',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer,states=[];
+  const result=await refreshReleasePointer(expected,{now:()=>1000,savePurgeState:async state=>states.push(state),
+    fetchImpl:async url=>url.includes('purge.')?{ok:false,status:429,headers:{get:()=> '3600'}}:response(JSON.stringify({...expected,commit:'b'.repeat(40)}))});
+  assert.equal(result.retryAfterMs,3600000);assert.equal(states.at(-1).nextPurgeAt,3601000);assert.equal(validPurgeState(states.at(-1),1000),true);
+});
+
+test('cooldown checkpoints are bounded, path-specific, and optional',async()=>{
+  const base={schemaVersion:1,pointerUrl:POINTER_URL,updatedAt:1000,nextPurgeAt:2000};
+  assert.equal(validPurgeState(base,1000),true);
+  for(const damage of [{pointerUrl:'https://foreign.invalid/'},{updatedAt:2000},{nextPurgeAt:86401001},{nextPurgeAt:NaN},{schemaVersion:2}])assert.equal(validPurgeState({...base,...damage},1000),false);
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let reads=0;
+  const result=await refreshReleasePointer(expected,{savePurgeState:async()=>{throw Error('optional cache unavailable');},sleep:async()=>{},log:()=>{},
+    fetchImpl:async url=>response(JSON.stringify(url.includes('purge.')?{status:'finished'}:++reads===1?{...expected,commit:'b'.repeat(40)}:expected))});
+  assert.equal(result.confirmed,true);
 });
 test('forks and non-default branches cannot publish',async()=>{
   for(const options of [{repository:'fork/repo',branch:'main'},{repository:REPOSITORY,branch:'dev'}])await assert.rejects(publishRelease({...options,git:()=>assert.fail('must not run git')}),/canonical/);
@@ -207,6 +273,33 @@ test('real local bare remote: no source changes, first publish, no-op repeat, ne
   await writeFile(path.join(root,'index.html'),(await f.read('index.html')).toString()+'\n');git(['add','index.html']);git(['commit','-m','updated entry']);git(['push','origin','main']);
   const updated=await publishRelease({...options,refreshOnly:true});
   assert.equal(updated.assetChecks,'validated');assert.equal(checks.length,checked+1,'new source still needs the full asset gate');
+  const beforeRace=git(['ls-remote','--heads','origin','cdn-release']).split(/\s/)[0];
+  await assert.rejects(publishRelease({...options,check:async()=>{
+    await writeFile(path.join(root,'during-validation.txt'),'new main while older assets warm');
+    git(['add','during-validation.txt']);git(['commit','-m','advance during readiness']);git(['push','origin','main']);
+  }}),error=>error.code==='CDN_SOURCE_SUPERSEDED');
+  assert.equal(git(['ls-remote','--heads','origin','cdn-release']).split(/\s/)[0],beforeRace,'late main race does not publish an obsolete pointer');
+  const preload=path.join(temp,'mock-cdn.mjs'),output=path.join(temp,'cli-output'),summary=path.join(temp,'cli-summary'),state=path.join(temp,'purge-state.json');
+  await writeFile(preload,`import {execFileSync} from 'node:child_process';
+const root=${JSON.stringify(root)},config=${JSON.stringify(config)},base=${JSON.stringify('https://cdn.jsdelivr.net/gh/'+REPOSITORY+'@')};
+const git=args=>execFileSync('git',['-c','safe.directory='+root,...args],{cwd:root,env:{...process.env,GIT_CONFIG_GLOBAL:config}});
+globalThis.fetch=async url=>{
+ if(url===${JSON.stringify(POINTER_URL)} || ${JSON.stringify(POINTER_MIRRORS)}.includes(url)){
+  const ref=git(['ls-remote','--heads','origin','cdn-release']).toString().split(/\\s/)[0];
+  const pointer=JSON.parse(git(['show',ref+':release.json']));
+  return Response.json({...pointer,commit:'f'.repeat(40)});
+ }
+ if(url===${JSON.stringify(POINTER_URL.replace('://cdn.','://purge.'))})return new Response('',{status:429,headers:{'Retry-After':'3600'}});
+ if(url.startsWith(base)){const suffix=url.slice(base.length),index=suffix.indexOf('/');return new Response(git(['show',suffix.slice(0,index)+':'+suffix.slice(index+1)]));}
+ throw Error('Unexpected network URL blocked in offline CLI test');
+};\n`);
+  execFileSync(process.execPath,['--import',pathToFileURL(preload).href,fileURLToPath(new URL('./publish-cdn-release.mjs',import.meta.url)),'--refresh-only'],{
+    cwd:root,encoding:'utf8',timeout:120000,env:{...env,DEFAULT_BRANCH:'main',GITHUB_REPOSITORY:REPOSITORY,
+      GITHUB_OUTPUT:output,GITHUB_STEP_SUMMARY:summary,CDN_PURGE_STATE_FILE:state},stdio:['pipe','pipe','pipe']});
+  assert.equal(await readFile(output,'utf8'),'cdn_status=deferred\n');
+  assert.match(await readFile(summary,'utf8'),/freshness is NOT confirmed/);
+  const checkpoint=JSON.parse(await readFile(state,'utf8'));
+  assert.equal(checkpoint.nextPurgeAt-checkpoint.updatedAt,3600000,'CLI checkpoint retains provider hour cooldown');
 });
 test('all file-writing workflows explicitly publish after their push, including token pushes',async()=>{
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');

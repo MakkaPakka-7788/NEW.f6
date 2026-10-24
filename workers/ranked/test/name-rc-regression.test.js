@@ -11,13 +11,15 @@ test('RC targeted handles, obfuscations, and contact shorthand are blocked',()=>
 
 test('context and lexical exceptions do not become blanket exemptions',()=>{
   for(const name of ['DiddyKong','Diddy Kong Racing','Nigam','Onigashima','NightRacer','Yttrium','Igloo','Gay','TransRacer','baddie','ChildRacer','KidsTouchControls','PoopedOn','raccoon','SpicyRacer','SonicSamurai','UltraPiston']) {
-    assert.equal(moderatePublicName(name).blocked,false,name);
+    const decision=moderatePublicName(name);
+    assert.equal(decision.blocked,false,name);
+    assert.equal(decision.clean,name);
   }
   for(const name of ['DiddyKongDiddy','DiddyKongFuck','RaccoonCoon','SpicySpic','SamuraiCSAM','PistonRapist'])assert.equal(moderatePublicName(name).blocked,true,name);
 });
 
 test('every generated pair is unique, safe, untruncated, and reachable by the ordinal API',()=>{
-  assert.deepEqual(generatedNameStats,{firstWords:160,secondWords:160,combinations:25600});
+  assert.deepEqual(generatedNameStats,{firstWords:384,secondWords:384,combinations:147456});
   const names=new Set();
   for(let i=0;i<generatedNameStats.combinations;i++){
     const name=generatedNameAt(i);
@@ -26,8 +28,8 @@ test('every generated pair is unique, safe, untruncated, and reachable by the or
     assert.equal(moderatePublicName(name).blocked,false,name);
     names.add(name);
   }
-  assert.equal(names.size,25600);
-  for(const i of [-1,25600,NaN,Infinity,1.5])assert.throws(()=>generatedNameAt(i),RangeError);
+  assert.equal(names.size,147456);
+  for(const i of [-1,generatedNameStats.combinations,NaN,Infinity,1.5])assert.throws(()=>generatedNameAt(i),RangeError);
 });
 
 test('seeded fallbacks are stable display aliases, not account renames',()=>{

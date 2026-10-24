@@ -36,6 +36,7 @@ test('published waiting replay binds run, period, account, exact time and conten
  const row={...f.row,runId,replayHash:createHash('sha256').update(f.row.replay).digest('hex'),
   verificationStatus:'waiting',pending:true,verified:false,eventRpEligible:false,source:'pending-event-recording'};
  const options={require:f.require,row,period,entry,viewer:'c'.repeat(64)};
+ await assert.rejects(preparePublishedEventGhost({...options,entry:{...entry,replayHash:'0'.repeat(64)}}));
  const ghost=await preparePublishedEventGhost(options);assert.equal(ghost.isSelf,false);assert.equal(ghost.nickname,'Other racer');assert.equal(ghost.time.numberOfFrames,20000);
  for(const change of [{runId:'d'.repeat(64)},{replayHash:'0'.repeat(64)},{accountId:'d'.repeat(64)},{periodId:'another'}])
   await assert.rejects(preparePublishedEventGhost({...options,row:{...row,...change}}));

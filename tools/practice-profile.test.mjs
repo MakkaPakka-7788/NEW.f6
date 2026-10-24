@@ -71,7 +71,7 @@ test('separates known local/cloud PB evidence from tracked finish history and ne
     { trackId: 'track-a', timeMs: 45500, source: 'cloud', rank: 4, fieldSize: 20 }
   ] });
   assert.match(html, /Tracked history/);
-  assert.match(html, /Cloud PB evidence/);
+  assert.match(html, /Submitted PB/);
   assert.match(html, /45\.50s/);
   assert.match(html, /Rank 4 of 20/);
   const noProof = renderPracticeProfile({ rows: [row()] });
@@ -134,7 +134,7 @@ test('sparse cards keep evidence readable without inventing session measurements
 
 test('attempt-only tracks omit empty evidence panels and retain meaningful time and counts', () => {
   const rows = Array.from({ length: 15 }, (_, i) => row({
-    trackId: 'attempt-' + i, finishes: 0, trackedBestMs: 0, pbs: 0, sincePbMs: 0
+    trackId: 'attempt-' + i, finishes: 0, trackedBestMs: 0, bestMs: 0, pbs: 0, sincePbMs: 0
   }));
   const before = structuredClone(rows);
   const html = renderPracticeProfile({ rows });
@@ -212,9 +212,9 @@ test('practice identity and controls survive injected popup CSS in narrow grid a
         renderPracticeProfile({
         coverage: { coverageFraction: .02 },
         rows: [
-          { trackId: 'a', trackName: 'Alpha with a very long track name', activeMs: 1000, attempts: 3, finishes: 2, longestHuntMs: 6000, lastPlayedAt: 100, improvementMs: 50 },
-          { trackId: 'b', trackName: 'Beta', activeMs: 9000, attempts: 1, longestHuntMs: 3000, lastPlayedAt: 200 },
-          { trackId: 'c', trackName: 'C'.repeat(100), activeMs: 9000, attempts: 2, finishes: 5, longestHuntMs: 9000, lastPlayedAt: 300, trackedBestMs: 10200 }
+          { trackId: 'a', trackName: 'Alpha with a very long track name', activeMs: 1000, attempts: 3, finishes: 2, longestHuntMs: 6000, lastPlayedAt: Date.now()-3000, improvementMs: 50 },
+          { trackId: 'b', trackName: 'Beta', activeMs: 9000, attempts: 1, longestHuntMs: 3000, lastPlayedAt: Date.now()-2000 },
+          { trackId: 'c', trackName: 'C'.repeat(100), activeMs: 9000, attempts: 2, finishes: 5, longestHuntMs: 9000, lastPlayedAt: Date.now()-1000, trackedBestMs: 10200 }
         ],
         results: [{ trackId: 'a', source: 'snapshot', timeMs: 9800, snapshotCapturedAt: Date.now() }]
       });
@@ -387,4 +387,14 @@ test('a substantial older hunt gets a revisit suggestion without claiming guaran
 test('compact active sort label keeps the full accessible option name',()=>{
  const html=renderPracticeProfile({rows:[row()]});
  assert.match(html,/<option value="active" aria-label="Active race time">Active time<\/option>/);
+});
+
+test('official and completed metadata separates saved PBs from recorded finishes',()=>{
+ const html=renderPracticeProfile({rows:[row({trackId:'official',finishes:0,trackedBestMs:0,bestMs:40000,biggestObservedImprovementMs:2000,biggestPbImprovementMs:1000})],trackType:()=> 'official'});
+ assert.match(html,/data-official="true" data-completed="true"/);
+ assert.match(html,/Known PB evidence/);assert.doesNotMatch(html,/recorded finishes/);
+ assert.match(html,/data-observed-gain-ms="2000"/);assert.match(html,/data-driven-gain-ms="1000"/);
+ assert.match(html,/value="observed-gain"/);assert.match(html,/value="driven-gain"/);
+ const confirmed=renderPracticeProfile({rows:[row()],results:[{trackId:'track-a',timeMs:45000,local:true,cloudConfirmed:true}]});
+ assert.match(confirmed,/Submitted PB/);assert.doesNotMatch(confirmed,/Local PB/);
 });

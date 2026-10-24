@@ -120,7 +120,9 @@ test('quarter-hour CDN recovery has typed opt-in dispatch/call modes, twenty-min
   assert.match(publish,/id: publication/);
   assert.match(job(cdn,'publish'),/outputs:\n      cdn_status: \$\{\{ steps.publication.outputs.cdn_status \}\}/);
   assert.match(cdn,/cdn_status:\n        description:[^\n]*\n        value: \$\{\{ jobs.publish.outputs.cdn_status \}\}/);
-  assert.doesNotMatch(cdn,/continue-on-error:|\|\| true|\|\| exit 0/);
+  assert.doesNotMatch(publish,/continue-on-error:|\|\| true|\|\| exit 0/);
+  const optional=steps(cdn).filter(value=>/continue-on-error: true/.test(value));
+  assert.equal(optional.length,2);assert.ok(optional.every(value=>/actions\/cache\/(restore|save)@/.test(value)));
   const mode=/CDN_REFRESH_ONLY: \$\{\{ (.+) \}\}/.exec(publish)[1];
   const root=await fixture(t);
   for(const event_name of ['schedule','workflow_dispatch','push','workflow_call'])for(const refresh_only of [true,false,undefined]){
@@ -131,8 +133,17 @@ test('quarter-hour CDN recovery has typed opt-in dispatch/call modes, twenty-min
     assert.ifError(result.error);assert.equal(result.status,0,result.stderr);
     assert.equal(result.stdout.trim(),'tools/publish-cdn-release.mjs'+(expected?' --refresh-only':''));
   }
-  const allowed=['actions/checkout','actions/setup-node'];
+  const allowed=['actions/checkout','actions/setup-node','actions/cache/restore','actions/cache/save'];
   for(const [,action] of cdn.matchAll(/uses: ([^@\s]+)@/g))assert.ok(allowed.includes(action));
+});
+
+test('CDN-only purge checkpoint persists cooldown even on failure and contains no release credentials',()=>{
+  const restore=step(cdn,'Restore CDN pointer purge cooldown'),save=step(cdn,'Save CDN pointer purge cooldown');
+  assert.match(restore,/restore-keys:/);assert.match(save,/if: always\(\) && !cancelled\(\)/);
+  assert.match(restore,/cdn-pointer-purge-v1-\$\{\{ github.repository_id \}\}/);
+  assert.match(save,/\$\{\{ github.run_id \}\}-\$\{\{ github.run_attempt \}\}/);
+  for(const value of [restore,save])assert.match(value,/path: \$\{\{ runner.temp \}\}\/polytrack-cdn-purge\/state.json/);
+  assert.match(step(cdn,'Validate immutable assets, publish pointer, and confirm CDN refresh'),/CDN_PURGE_STATE_FILE:/);
 });
 
 test('the existing privileged secret is step-scoped and forwarded explicitly, never passed to CDN or Kodub',()=>{

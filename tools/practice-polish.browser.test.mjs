@@ -69,3 +69,21 @@ test('practice refresh retains direction, view, disclosures, focus and text sele
  await page.evaluate(()=>{const state=practice.capturePracticeProfileView(document.querySelector('.polytrack-practice-profile'));rows=rows.map(r=>({...r,finishes:0}));renderPractice(state);});
  assert.equal(await page.locator('[data-pp-sort]').inputValue(),'recent','removed measurements select a valid fallback');
 });
+
+test('official and finished filters combine and survive refresh without overlapping view controls',async t=>{
+ const page=await fixture(t);
+ await page.evaluate(()=>{rows=rows.map((r,i)=>({...r,type:i<2?'official':'custom',biggestObservedImprovementMs:(i+1)*100,biggestPbImprovementMs:(4-i)*100}));renderPractice();});
+ const ids=()=>page.locator('.pp-track:not([hidden])').evaluateAll(items=>items.map(e=>e.dataset.ppTrackId));
+ await page.locator('[data-pp-sort]').selectOption('observed-gain');assert.deepEqual(await ids(),['3','2','1','0']);
+ await page.locator('[data-pp-direction]').click();assert.deepEqual(await ids(),['0','1','2','3']);
+ await page.locator('[data-pp-sort]').selectOption('driven-gain');assert.deepEqual(await ids(),['3','2','1','0']);
+ await page.locator('[data-pp-official]').click();assert.deepEqual(await ids(),['1','0']);
+ await page.locator('[data-pp-finished]').click();assert.deepEqual(await ids(),['1','0']);
+ await page.evaluate(()=>renderPractice(practice.capturePracticeProfileView(document.querySelector('.polytrack-practice-profile'))));
+ assert.deepEqual(await ids(),['1','0']);
+ for(const [width,height] of [[320,568],[440,650],[1366,600],[844,320]]){
+  await page.setViewportSize({width,height});
+  await page.locator('[data-pp-view="list"]').click();await page.locator('[data-pp-view="grid"]').click();
+  assert.equal(await page.locator('[data-pp-official]').getAttribute('aria-pressed'),'true');
+ }
+});

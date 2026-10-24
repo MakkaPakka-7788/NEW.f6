@@ -34,7 +34,7 @@ test('published runAt and exact creation timestamps render; publication, verific
   for(const row of [{updatedAt:received},{verifiedAt:received},{runAgeMs:1000},
     {submittedAt:now+86400000},{receivedAt:'invalid'},{runAt:Infinity},{submittedAt:-1}]){
     assert.equal(ui.eventDisplayRunAt(row,now),null);
-    assert.equal(ui.eventVerificationLabel(row,false),'Date unavailable - Verified');
+    assert.equal(ui.eventVerificationLabel(row,false),row.verifiedAt?'Verification date '+new Date(received).toLocaleString(undefined,{year:'numeric',month:'2-digit',day:'2-digit',hour:'numeric',minute:'2-digit'})+' - Verified':'Date unavailable - Verified');
   }
 });
 test('live and archived event row presentation replaces an opaque native suffix with readable ordinals and does not change ranks or points',()=>{
@@ -47,7 +47,7 @@ test('live and archived event row presentation replaces an opaque native suffix 
     assert.equal(fixture.position.childNodes[1].className,'sq-event-ordinal-suffix');
     assert.equal(fixture.state.dataset.sqPbAt,undefined,'receipt time must not masquerade as exact PB creation');
     assert.match(fixture.state.dataset.sqNativeDate,/^Received /);
-    assert.doesNotMatch(fixture.state.title,/Date unavailable/);
+    assert.match(fixture.state.title,/^Received .* - Verified$/);
     assert.equal(JSON.stringify(row),before);
   }
   assert.equal((source.match(/decorateEventRowPresentation\(button,row,now\(\)\)/g)||[]).length,2,'both live and archived native rows use the presentation adapter');
