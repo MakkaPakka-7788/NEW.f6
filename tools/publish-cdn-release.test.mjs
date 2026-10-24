@@ -103,15 +103,65 @@ test('every CDN file, not only readiness probes, must be strictly below 20 MB',(
   assert.doesNotThrow(()=>assertCdnAssetSizes([{path:'large.bin',bytes:19999999}]));
   for(const bytes of [20000000,20000001,NaN,-1])assert.throws(()=>assertCdnAssetSizes([{path:'large.bin',bytes}]),/under 20,000,000/);
 });
-test('only mutable pointer is purged, then its actual content is checked',async()=>{
+test('a current loader pointer avoids redundant purges',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];
-  await refreshReleasePointer(expected,{sleep:async()=>{},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:expected));}});
-  assert.deepEqual(calls,[POINTER_URL.replace('://cdn.','://purge.'),POINTER_URL]);
+  const result=await refreshReleasePointer(expected,{sleep:async()=>{},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(expected));}});
+  assert.deepEqual(calls,[POINTER_URL]);assert.equal(result.purges,0);assert.equal(result.confirmed,true);
 });
 test('purge success with stale pointer is not reported as success',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];let time=0;
+  await assert.rejects(refreshReleasePointer(expected,{now:()=>time,log:()=>{},sleep:async ms=>{time+=ms;},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:{...expected,commit:'b'.repeat(40)}));}}),error=>error.code==='CDN_PROPAGATION_PENDING'&&error.purges===1);
+  assert.equal(calls.filter(url=>url.includes('purge.jsdelivr.net')).length,1);
+  assert.ok(calls.length<=10);assert.ok(time<=240000);assert.ok(time>49000);
+});
+
+test('delayed CDN propagation recovers beyond the old 49-second limit without repeated purging',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];let time=0;
+  const result=await refreshReleasePointer(expected,{now:()=>time,log:()=>{},sleep:async ms=>{time+=ms;},fetchImpl:async url=>{
+    calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:time<110000?{...expected,commit:'b'.repeat(40)}:expected));
+  }});
+  assert.equal(result.confirmed,true);assert.equal(result.elapsedMs,110000);assert.equal(result.purges,1);
+  assert.ok(calls.every(url=>url===POINTER_URL||url===POINTER_URL.replace('://cdn.','://purge.')));
+});
+
+test('purge transport failures do not prevent confirming actually current content',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let reads=0;
+  const result=await refreshReleasePointer(expected,{log:()=>{},sleep:async()=>{},fetchImpl:async url=>{
+    if(url.includes('purge.jsdelivr.net'))throw TypeError('fetch failed');
+    return response(JSON.stringify(++reads===1?{...expected,commit:'b'.repeat(40)}:expected));
+  }});
+  assert.equal(result.confirmed,true);assert.equal(result.purges,1);assert.equal(reads,2);
+});
+
+test('finished purge with a throttled path defers honestly instead of claiming propagation',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];
-  await assert.rejects(refreshReleasePointer(expected,{sleep:async()=>{},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:{...expected,commit:'b'.repeat(40)}));}}),/propagation/);
-  assert.equal(calls.length,6);
+  const result=await refreshReleasePointer(expected,{sleep:async()=>assert.fail('do not wait through a provider cooldown'),fetchImpl:async url=>{
+    calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?
+      {status:'finished',paths:{[new URL(POINTER_URL).pathname]:{throttled:true,throttlingReset:2561}}}:{...expected,commit:'b'.repeat(40)}));
+  }});
+  assert.equal(result.confirmed,false);assert.equal(result.status,'deferred');assert.equal(result.reason,'purge-throttled');assert.equal(result.retryAfterMs,2561000);assert.equal(calls.length,2);
+});
+
+test('purge HTTP rate limiting is deferred without replaying captures or waiting out the cooldown',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;
+  const result=await refreshReleasePointer(expected,{sleep:async()=>assert.fail('do not spin on 429'),fetchImpl:async url=>url.includes('purge.jsdelivr.net')?
+    {ok:false,status:429,headers:{get:()=> '120'}}:response(JSON.stringify({...expected,commit:'b'.repeat(40)}))});
+  assert.equal(result.confirmed,false);assert.equal(result.status,'deferred');assert.equal(result.reason,'purge-rate-limited');assert.equal(result.retryAfterMs,120000);
+});
+
+test('an invalid or foreign pointer cannot become a successful release confirmation',async()=>{
+  const expected=(await releasePlan({commit:sha,...fixture()})).pointer;let calls=0;
+  for(const actual of [{...expected,repository:'another/repository'},{...expected,indexSha256:'bad'},null]){
+    await assert.rejects(refreshReleasePointer(expected,{fetchImpl:async()=>{calls++;return response(JSON.stringify(actual));}}),/Invalid CDN release pointer/);
+  }
+  assert.equal(calls,3);
+  await assert.rejects(refreshReleasePointer({...expected,commit:'main'},{fetchImpl:async()=>assert.fail('invalid expected pointer must not fetch')}),/Invalid expected/);
+});
+
+test('source commit equality is checked even when immutable asset bytes are unchanged',async()=>{
+  const expected={...(await releasePlan({commit:sha,...fixture()})).pointer,sourceCommit:'f'.repeat(40)};let reads=0;
+  const result=await refreshReleasePointer(expected,{log:()=>{},sleep:async()=>{},fetchImpl:async url=>response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:++reads===1?{...expected,sourceCommit:'e'.repeat(40)}:expected))});
+  assert.equal(reads,2);assert.equal(result.confirmed,true);
 });
 test('forks and non-default branches cannot publish',async()=>{
   for(const options of [{repository:'fork/repo',branch:'main'},{repository:REPOSITORY,branch:'dev'}])await assert.rejects(publishRelease({...options,git:()=>assert.fail('must not run git')}),/canonical/);
@@ -151,6 +201,12 @@ test('real local bare remote: no source changes, first publish, no-op repeat, ne
   assert.equal(purges.length,4);
   await assert.rejects(publishRelease({...options,check:async()=>{throw Error('CDN down');}}),/CDN down/);
   assert.equal(purges.length,4);
+  const checked=checks.length;
+  const repaired=await publishRelease({...options,refreshOnly:true,check:async()=>assert.fail('do not rewarm an already-published immutable package')});
+  assert.equal(repaired.assetChecks,'previously-published-immutable-package');assert.equal(checks.length,checked);assert.equal(purges.length,5);
+  await writeFile(path.join(root,'index.html'),(await f.read('index.html')).toString()+'\n');git(['add','index.html']);git(['commit','-m','updated entry']);git(['push','origin','main']);
+  const updated=await publishRelease({...options,refreshOnly:true});
+  assert.equal(updated.assetChecks,'validated');assert.equal(checks.length,checked+1,'new source still needs the full asset gate');
 });
 test('all file-writing workflows explicitly publish after their push, including token pushes',async()=>{
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');

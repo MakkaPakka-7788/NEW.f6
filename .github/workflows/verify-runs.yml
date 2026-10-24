@@ -33,6 +33,9 @@ jobs:
           cache-dependency-path: tools/verifier/package-lock.json
       - name: Check Extra catalog and trusted track pins
         run: node tools/extra-verification-check.mjs
+      - name: Test bounded workflow release contracts
+        # Offline checks only; no service-account credential is exposed to tests.
+        run: node --test tools/workflow-release-contract.test.mjs
       - name: Check trusted engine before Firebase reads
         run: node --input-type=module -e "import {validateEnginePin} from './tools/verifier/run.mjs'; await validateEnginePin();"
       - name: Check for due verification work

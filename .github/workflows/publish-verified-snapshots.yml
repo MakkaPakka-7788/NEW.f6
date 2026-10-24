@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   sync:
+    outputs:
+      publication_changed: ${{ steps.publication.outputs.changed }}
     if: inputs.publication_changed && vars.POLYTRACK_POST_VERIFY_SNAPSHOTS_ENABLED != 'false' && github.repository == 'StaticQuasar931/PolyTrack-0.6.3-Ranked' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -33,7 +35,7 @@ jobs:
       # Resolve the current default branch only after acquiring the shared capture lock.
       # Never check out verifier artifacts or a workflow_run head ref.
       - name: Test conflict-safe publishing
-        run: node --test tools/push-public-capture.test.mjs tools/post-verification-snapshot.test.mjs
+        run: node --test tools/push-public-capture.test.mjs tools/post-verification-snapshot.test.mjs tools/workflow-release-contract.test.mjs
       - name: Check Extra catalog, registry, and pins
         # Local consistency check; fail before fetching or writing public captures.
         run: node tools/extra-verification-check.mjs
@@ -143,6 +145,7 @@ jobs:
           path: ${{ runner.temp }}/polytrack-replay-retries/history.json
           key: replay-retries-v1-${{ github.repository_id }}-${{ github.event.repository.default_branch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Commit changed assignments
+        id: publication
         # A successful step can be explicitly deferred; never publish that capture.
         if: success() && steps.catalog.outputs.capture_status == 'complete' && steps.snapshot.outputs.capture_status == 'complete'
         env:
@@ -155,16 +158,18 @@ jobs:
           fi
           if git diff --cached --quiet; then
             echo "Public static backups are current."
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Sync public ranked snapshots"
           node tools/push-public-capture.mjs
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
 
   publish_cdn_release:
     needs: sync
-    if: needs.sync.result == 'success'
+    if: needs.sync.result == 'success' && needs.sync.outputs.publication_changed == 'true'
     permissions:
       contents: write
     uses: ./.github/workflows/publish-cdn-release.yml

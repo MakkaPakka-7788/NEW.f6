@@ -610,7 +610,15 @@ test('workflow keeps all expensive steps due-gated and credentials restricted to
     assert.ok(step,name);
     assert.match(step,/if: steps.queue.outputs.has_work == 'true'/,name);
   }
-  assert.equal((workflow.match(/FIREBASE_VERIFIER_SERVICE_ACCOUNT:/g)||[]).length,2);
+  const publisherAt=workflow.indexOf('  publish_snapshots:');
+  assert.ok(publisherAt>0);
+  const processing=workflow.slice(0,publisherAt),publisher=workflow.slice(publisherAt);
+  assert.equal((processing.match(/FIREBASE_VERIFIER_SERVICE_ACCOUNT:/g)||[]).length,2);
+  assert.equal((publisher.match(/FIREBASE_VERIFIER_SERVICE_ACCOUNT:/g)||[]).length,1);
+  assert.match(publisher,/needs.verify.result == 'success' && needs.verify.outputs.snapshot_needed == 'true'/);
+  assert.match(publisher,/uses: \.\/\.github\/workflows\/publish-verified-snapshots\.yml/);
+  assert.match(publisher,/secrets:\s+FIREBASE_VERIFIER_SERVICE_ACCOUNT: \$\{\{ secrets\.FIREBASE_VERIFIER_SERVICE_ACCOUNT \}\}/);
+  assert.doesNotMatch(workflow,/secrets: inherit/);
   assert.ok(!workflow.includes('repository_dispatch'));
 });
 
