@@ -5,6 +5,7 @@ import { VERIFIER_ENGINE_DIGEST, VERIFIER_VERSION } from '../../workers/ranked/s
 import { createSimilarityReviewer, similarityEvidence } from './similarity.mjs';
 import { reviewInboxWrite } from './review-inbox.mjs';
 import { VerificationEventConflictError } from './throughput.mjs';
+import { eventReviewJobs } from './event-review-jobs.mjs';
 
 export const EVENT_JOB_LIMIT = 16;
 const DISCOVERY_REQUEST_RESERVE = 24;
@@ -27,8 +28,11 @@ export async function checkEventWork(db, { now = Date.now } = {}) {
 export async function runEventVerification(db, root, { now = Date.now, verifyBatch, limit = EVENT_JOB_LIMIT, intakeLimit = 16, canSpend = () => true, selectionState } = {}) {
   const r = runtime(db, typeof now === 'function' ? now : () => now);
   const verify = verifyBatch || createRequire(import.meta.url)('./verify.cjs').verifyBatch;
+  const review = createSimilarityReviewer(root);
   return runEventCoordinator(r, root, {
-    verifyBatch: verify, reviewSimilarity:createSimilarityReviewer(root), limit, intakeLimit, canSpend, selectionState,
+    verifyBatch: verify,
+    reviewSimilarity:async(jobs,results,period)=>review(await eventReviewJobs(db,jobs,period),results),
+    limit, intakeLimit, canSpend, selectionState,
     writeFinding: async (periodId, job, verdict, evidence) => {
       const resultId = job.runId || job.resultId;
       const auditId = createHash('sha256').update(JSON.stringify([
@@ -89,7 +93,7 @@ export async function runEventCoordinator(r, root, { verifyBatch, limit = EVENT_
           const verified = await verifyBatch(root,trustedJobs,trustedTracks);
           if (reviewSimilarity) {
             assertBoundEventResults(trustedJobs,trustedPeriod,verified);
-            await reviewSimilarity(trustedJobs,verified);
+            await reviewSimilarity(trustedJobs,verified,trustedPeriod);
             for (const job of trustedJobs) {
               const resultId = job.runId || job.resultId;
               const result = verified.find(row => row?.resultId === resultId);

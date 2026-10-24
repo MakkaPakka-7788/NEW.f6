@@ -26,7 +26,8 @@ test('source states and locked refresh styling are present and interaction-neutr
   assert.ok(patchSource.includes('track-data-pb-status">WAITING'));
   assert.ok(patchSource.includes("baseSource!=='snapshot'&&checkedAt?"));
   assert.doesNotMatch(patchSource, /track-data-age/);
-  assert.match(patchSource, /banner\.dataset\.layout='vertical'/);
+  assert.match(patchSource, /const layout=gutter>=.*'horizontal'.*'vertical'/);
+  assert.match(patchSource, /banner\.dataset\.layout=layout/);
   assert.match(css, /data-layout="vertical"/);
   assert.match(css, /border-radius:\s*0/);
   assert.match(css, /\[data-sq-snapshot-refresh-lock\]:hover/);

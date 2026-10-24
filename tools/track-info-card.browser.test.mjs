@@ -87,7 +87,7 @@ test('responsive card harness uses production CSS, font, markup and placement', 
 });
 
 test('snapshot UI adapts around the native menu without changing its geometry', {
-  skip: !chromium && 'Set PLAYWRIGHT_MODULE to run the offline browser check.', timeout: 65000,
+  skip: !chromium && 'Set PLAYWRIGHT_MODULE to run the offline browser check.', timeout: process.env.POLYTRACK_FULL_MATRIX==='1'?300000:65000,
 }, async () => {
   const browser = await chromium.launch({ headless: true, timeout: 15000,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
@@ -149,13 +149,14 @@ test('snapshot UI adapts around the native menu without changing its geometry', 
               nativeUnchanged: beforeGeometry===nativeGeometry(),
               completeRacerVisible: rect(scroll).height >= rect(scroll.querySelector('button.main')).height - 1,
               position: style.position, fontFamily: style.fontFamily, fontSize: parseFloat(style.fontSize), titleRatio: parseFloat(title.fontSize) / parseFloat(style.fontSize), detailRatio: parseFloat(details.fontSize) / parseFloat(style.fontSize),
+              weightFontSize:parseFloat(getComputedStyle(card.querySelector('.track-data-weight')).fontSize),playersFontSize:parseFloat(getComputedStyle(card.querySelector('.track-data-players')).fontSize),
               titleDirection: title.flexDirection, layout: card.dataset.layout || '', background: style.backgroundColor,
               overflow: [card, footer, ...footer.children, document.documentElement].map(node => ({className:node.className, clientWidth:node.clientWidth, scrollWidth:node.scrollWidth, clientHeight:node.clientHeight, scrollHeight:node.scrollHeight})),
               lines: [...card.children].map(node=>({...rect(node),hidden:getComputedStyle(node).clipPath!=='none'||getComputedStyle(node).display==='none'})),
             };
           }, { scale, html: bannerHtml(state), state: state.name }), 'card measurement');
           const label = `${viewport.label} ${viewport.width}x${viewport.height} UI ${scale} ${state.name}`;
-          evidence.push({ label, ...result });
+          evidence.push({ label, scale, targetWidth:viewport.width, targetHeight:viewport.height, state:state.name, ...result });
           if (process.env.POLYTRACK_AUDIT_SCREENSHOT_DIR && scale === 1 && state.name === 'submitted-pb' && [384, 390, 1280, 1366, 1920].includes(viewport.width)) {
             await bounded(page.screenshot({ path: join(process.env.POLYTRACK_AUDIT_SCREENSHOT_DIR, `track-info-card-${viewport.width}x${viewport.height}.png`), timeout: 4000, animations: 'disabled' }), 'screenshot');
           }
@@ -196,6 +197,13 @@ test('snapshot UI adapts around the native menu without changing its geometry', 
           }
         }
       }
+    }
+    for(const base of evidence.filter(row=>row.scale===1&&row.state==='snapshot'&&row.layout!=='compact')){
+      const large=evidence.find(row=>row.scale===1.25&&row.state===base.state&&row.targetWidth===base.targetWidth&&row.targetHeight===base.targetHeight);
+      if(large?.layout==='compact')continue;
+      assert.ok(large.weightFontSize>=base.weightFontSize*1.24,base.label+': weight honors text scale');
+      assert.ok(large.playersFontSize>=base.playersFontSize*1.24,base.label+': population honors text scale');
+      if(base.targetWidth>=2800&&base.targetHeight>=1400)assert.ok(large.card.width>base.card.width*1.15,base.label+': roomy cards grow with text');
     }
     await page.setViewportSize({width:390,height:844});
     await page.evaluate(()=>{

@@ -8,9 +8,10 @@ const origin = 'https://staticquasar931.github.io';
 const request = (suffix = '', source = origin, ip = '203.0.113.1') => new Request('https://ranked.example/v1/status' + suffix,
   {headers: {Origin: source, 'CF-Connecting-IP': ip}});
 
-test('status shares cold reads, ignores cache-busters and expires after 30 seconds', async () => {
+test('status shares cold reads, ignores cache-busters and expires after 30 seconds', async (t) => {
   const previous = globalThis.caches, stored = new Map();
   let reads = 0, permits = 0, now = 0;
+  t.mock.method(Date, 'now', () => now);
   globalThis.caches = {default: {
     match: async key => {const item = stored.get(key.url); return item && item.until > now ? item.response.clone() : null;},
     put: async (key, response) => {assert.equal(response.headers.get('Cache-Control'), 'public, max-age=30'); stored.set(key.url, {until: now + 30000, response: response.clone()});}
@@ -134,9 +135,10 @@ test('warm status cache hits skip even a denying limiter', async () => {
 });
 
 
-test('public leaderboards share a five-minute cache without caching failures', async () => {
+test('public leaderboards share a five-minute cache without caching failures', async (t) => {
   const previous = globalThis.caches, stored = new Map(), fills = [];
   let reads = 0, now = 0;
+  t.mock.method(Date, 'now', () => now);
   globalThis.caches = {default: {
     match: async key => {const item = stored.get(key.url); return item && item.until > now ? item.response.clone() : null;},
     put: async (key, response) => {
@@ -167,9 +169,10 @@ test('public leaderboards share a five-minute cache without caching failures', a
   } finally {if (previous === undefined) delete globalThis.caches; else globalThis.caches = previous;}
 });
 
-test('immutable ranked pages stay cached for a day and changing generation reads its own manifest', async()=>{
+test('immutable ranked pages stay cached for a day and changing generation reads its own manifest', async(t)=>{
   const prior = globalThis.caches, stored = new Map(), pending = [];
   let reads = 0, now = 0;
+  t.mock.method(Date, 'now', () => now);
   globalThis.caches = {default:{
     match:async key=>{const row=stored.get(key.url);return row&&row.until>now?row.response.clone():null;},
     put:async(key,response)=>{

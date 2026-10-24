@@ -1,0 +1,76 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const source=fs.readFileSync(new URL('./client.mjs',import.meta.url),'utf8');
+const dates=source.slice(source.indexOf('export function eventRunDate('),source.indexOf('export function eventStandingsLabel('));
+const ordinals=source.slice(source.indexOf('export function eventOrdinal('),source.indexOf('export function eventTrackName('));
+const ui=vm.runInNewContext(`(()=>{${(dates+ordinals).replace(/export function /g,'function ')};return {eventRunDate,eventExactRunAt,eventDisplayRunAt,eventVerificationLabel,decorateEventRowPresentation,eventOrdinal};})()`,{Date,Number,String,Object,Math});
+const now=Date.now(),received=now-3600000;
+function rowButton(){
+  const element=()=>({dataset:{},childNodes:[],attributes:{},setAttribute(key,value){this.attributes[key]=value;},
+    replaceChildren(...children){this.childNodes=children;},get textContent(){return this.childNodes.map(node=>node.textContent).join('');},
+    set textContent(value){this.childNodes=[{nodeType:3,textContent:value}];}});
+  const position=element();position.textContent='1X';
+  const state=element();state.childNodes=[{nodeType:3,textContent:'Just now'},{nodeType:1,textContent:'',icon:true}];
+  const button={ownerDocument:{createElement:element,createTextNode:textContent=>({nodeType:3,textContent})},
+    querySelector:selector=>selector==='.left .position'?position:state};
+  return {button,position,state};
+}
+test('published event receipt time is displayed honestly without changing exact run-time semantics',()=>{
+  for(const field of ['submittedAt','receivedAt']){
+    const row={[field]:received,updatedAt:now,verifiedAt:now};
+    assert.equal(ui.eventExactRunAt(row),null);
+    assert.equal(ui.eventDisplayRunAt(row,now),received);
+    assert.match(ui.eventVerificationLabel(row,false,'en-US'),/^Received .* - Verified$/);
+    assert.match(ui.eventVerificationLabel({...row,pending:true},true,'en-US'),/^Received .* - Pending$/);
+    assert.equal(ui.eventRunDate(row,now).label,'1 hour ago');
+  }
+});
+test('published runAt and exact creation timestamps render; publication, verification, age and invalid dates are never substituted',()=>{
+  assert.equal(ui.eventDisplayRunAt({runAt:received},now),received);
+  assert.doesNotMatch(ui.eventVerificationLabel({runAt:received},false),/^Received /);
+  assert.equal(ui.eventDisplayRunAt({pbAt:received-1000,submittedAt:received},now),received-1000);
+  for(const row of [{updatedAt:received},{verifiedAt:received},{runAgeMs:1000},
+    {submittedAt:now+86400000},{receivedAt:'invalid'},{runAt:Infinity},{submittedAt:-1}]){
+    assert.equal(ui.eventDisplayRunAt(row,now),null);
+    assert.equal(ui.eventVerificationLabel(row,false),'Date unavailable - Verified');
+  }
+});
+test('live and archived event row presentation replaces an opaque native suffix with readable ordinals and does not change ranks or points',()=>{
+  for(const rank of [1,2,3,4,11,12,13,21,22,23,101,111,112,113]){
+    const fixture=rowButton(),row={rank,rp:87,timeMs:20000,submittedAt:received},before=JSON.stringify(row);
+    ui.decorateEventRowPresentation(fixture.button,row,now);
+    assert.equal(fixture.position.textContent,ui.eventOrdinal(rank));
+    assert.equal(fixture.position.childNodes[1].textContent,ui.eventOrdinal(rank).slice(String(rank).length));
+    assert.equal(fixture.position.attributes['aria-label'],ui.eventOrdinal(rank));
+    assert.equal(fixture.position.childNodes[1].className,'sq-event-ordinal-suffix');
+    assert.equal(fixture.state.dataset.sqPbAt,undefined,'receipt time must not masquerade as exact PB creation');
+    assert.match(fixture.state.dataset.sqNativeDate,/^Received /);
+    assert.doesNotMatch(fixture.state.title,/Date unavailable/);
+    assert.equal(JSON.stringify(row),before);
+  }
+  assert.equal((source.match(/decorateEventRowPresentation\(button,row,now\(\)\)/g)||[]).length,2,'both live and archived native rows use the presentation adapter');
+});
+test('unknown date correction preserves verification icons and pending state while exact dates remain available to the shared updater',()=>{
+  const f=rowButton();ui.decorateEventRowPresentation(f.button,{rank:1,pending:true,updatedAt:now},now);
+  assert.equal(f.state.childNodes[0].textContent,'Date unavailable');assert.equal(f.state.childNodes[1].icon,true);
+  assert.equal(f.state.dataset.sqRunStatus,'unchecked');assert.equal(f.state.title,'Date unavailable - Pending');
+  ui.decorateEventRowPresentation(f.button,{rank:1,pbAt:received},now);
+  assert.equal(f.state.dataset.sqRunStatus,'verified');assert.equal(f.state.dataset.sqPbAt,String(received));
+});
+test('event finish ordinal uses a readable suffix without changing the place or mutating every tick',()=>{
+  const f=rowButton(),place={rank:1,fieldSize:4,provisional:false},classes=new Set();
+  f.position.querySelector=()=>f.position.childNodes.find(node=>node.className==='sq-event-ordinal-suffix')||null;
+  const current={querySelector:()=>f.position,classList:{contains:value=>classes.has(value),toggle:(value,on)=>on?classes.add(value):classes.delete(value)}};
+  const root={querySelector:selector=>selector==='.current'?current:null};
+  const start=source.indexOf('  function syncFinishPlace(){'),end=source.indexOf('  function tick(',start);
+  assert.ok(start>=0&&end>start);
+  const sync=vm.runInNewContext(source.slice(start,end)+';syncFinishPlace;',{
+    document:{querySelector:()=>root,...f.button.ownerDocument},latestFinish:{periodId:'daily',accountId:'mine'},
+    sessions:{current:()=>({periodId:'daily'})},bridge:{accountId:()=> 'mine'},finishPlace:()=>place,eventOrdinal:ui.eventOrdinal,
+  });
+  sync();assert.equal(f.position.textContent,'1st');assert.equal(f.position.title,'Event place 1 of 4');
+  const suffix=f.position.childNodes[1];sync();assert.equal(f.position.childNodes[1],suffix,'stable ticks do not replace suffix nodes');
+  place.rank=21;sync();assert.equal(f.position.textContent,'21st');assert.equal(place.rank,21);
+});

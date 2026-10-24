@@ -641,9 +641,10 @@ test('snapshot coalescing remains active until a delayed cache fill settles', as
   } finally { if (prior === undefined) delete globalThis.caches; else globalThis.caches = prior; }
 });
 
-test('failed cache fill is contained and releases the snapshot key for a fresh load', async () => {
+test('failed cache fill retains memory protection until the snapshot expires', async (t) => {
   const prior = globalThis.caches, stored = new Map(), pending = [];
-  let reads = 0, fills = 0;
+  let reads = 0, fills = 0, now = 0;
+  t.mock.method(Date, 'now', () => now);
   globalThis.caches = { default: {
     match: async key => stored.get(key.url)?.clone() || null,
     put: async (key, response) => {
@@ -667,7 +668,12 @@ test('failed cache fill is contained and releases the snapshot key for a fresh l
     await Promise.all(pending.splice(0));
 
     const second = await handleRequest(request(), env, context);
-    assert.equal((await second.json()).revision, 2);
+    assert.equal((await second.json()).revision, 1);
+    assert.equal(reads, 1);
+    assert.equal(fills, 1);
+    now = 300001;
+    const third = await handleRequest(request(), env, context);
+    assert.equal((await third.json()).revision, 2);
     await Promise.all(pending);
     assert.equal(reads, 2);
     assert.equal(fills, 2);

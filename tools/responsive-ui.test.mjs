@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {installResponsiveViewport} from './responsive-ui.mjs';
+import {installResponsiveViewport,availableViewport} from './responsive-ui.mjs';
 
 function fixture({width=1366,height=600,visualHeight=height,containerWidth=width,rootWidth=width,rootHeight=height,useContainer=true}={}){
   const events=new Map(),visualEvents=new Map(),properties={},frames=new Map();let writes=0,id=0,scrolled=0;
@@ -45,4 +45,23 @@ test('optional Overall results use the static reader without a Firestore fallbac
 test('root client bounds reject mobile overflow-expanded inner dimensions',()=>{
  const f=fixture({width:535,height:949,visualHeight:948,rootWidth:440,rootHeight:780,useContainer:false});
  assert.equal(f.properties['--sq-available-width'],'440px');assert.equal(f.properties['--sq-available-height'],'780px');f.dispose();
+});
+
+test('available viewport intersects offset containers and visual keyboard bounds',()=>{
+ const document={documentElement:{clientWidth:1000,clientHeight:800}};
+ const window={innerWidth:1000,innerHeight:800,visualViewport:{width:800,height:300,offsetLeft:100,offsetTop:240}};
+ const container={getBoundingClientRect:()=>({left:200,top:100,width:900,height:600,right:1100,bottom:700})};
+ assert.deepEqual(availableViewport({document,window,container}),{left:200,top:240,width:700,height:300});
+});
+test('late root resizing is observed even without another window resize',()=>{
+ const callbacks=[],watched=[],events=[],properties={};const html={clientWidth:440,clientHeight:780,dataset:{},style:{setProperty:(key,value)=>properties[key]=value}};
+ let frame;const window={innerWidth:440,innerHeight:780,visualViewport:{width:440,height:780,addEventListener(){},removeEventListener(){}},
+ addEventListener(){},removeEventListener(){},requestAnimationFrame:fn=>(frame=fn,1),cancelAnimationFrame(){},CustomEvent:class{constructor(type,init){this.type=type;this.detail=init.detail;}},
+ ResizeObserver:class{constructor(callback){callbacks.push(callback);}observe(node){watched.push(node);}disconnect(){watched.length=0;}}};
+ const document={documentElement:html,addEventListener(){},removeEventListener(){},dispatchEvent:event=>events.push(event)};
+ const dispose=installResponsiveViewport({document,window});assert.deepEqual(watched,[html]);
+ html.clientWidth=956;html.clientHeight=360;window.innerWidth=956;window.innerHeight=360;window.visualViewport.width=956;window.visualViewport.height=360;
+ callbacks[0]();frame();assert.equal(properties['--sq-available-width'],'956px');assert.equal(properties['--sq-available-height'],'360px');
+ assert.equal(events.at(-1).type,'sq-viewport-changed');assert.deepEqual(events.at(-1).detail,{width:956,height:360,top:0,left:0});
+ const before=events.length;callbacks[0]();frame();assert.equal(events.length,before);dispose();assert.deepEqual(watched,[]);
 });

@@ -819,3 +819,5 @@ test('compact track catalog discovers low-participation boards and avoids unchan
  assert.deepEqual(saved.trackCatalog,[{trackId:id,updatedAt:300}]);
  for(const trackCatalog of [[{trackId:'bad',updatedAt:300}],[{trackId:id,updatedAt:-1}],[{trackId:id,updatedAt:300},{trackId:id,updatedAt:300}],{}])assert.throws(()=>publicOverallBackup({...overall,trackCatalog}),/track catalog/);
 });
+
+import './event-verification-dates.test.mjs';

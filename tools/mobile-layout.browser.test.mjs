@@ -17,12 +17,14 @@ try{
  await installNativeRankedAuditFixture(page,{rejectWrites:true});
  await page.route(url=>url.origin!==new URL(server.url).origin,route=>new URL(route.request().url()).pathname==='/v6/user'?route.fulfill({status:200,contentType:'application/json',body:'null'}):route.abort('blockedbyclient'));
  await page.goto(server.url,{waitUntil:'domcontentloaded'});
- for(const name of ['Exit','Back'])await page.getByRole('button',{name,exact:true}).last().click({timeout:45000});
+ await page.locator('button:visible').filter({hasText:/^\s*Exit\s*$/}).last().click({timeout:60000});
+ await page.locator('.track-selection-ui:not(.hidden)').waitFor({state:'visible'});
+ await page.locator('button:visible').filter({hasText:/^\s*Back\s*$/}).last().click({timeout:45000});
  await page.locator('#injectedRankingsBtn.ranked-ready').waitFor({state:'visible',timeout:45000});
  await page.screenshot({path:new URL('after-home.png',output).pathname.replace(/^\/([A-Za-z]:)/,'$1')});
  await page.setViewportSize({width:956,height:360});
  await page.waitForFunction(()=>parseFloat(document.documentElement.style.getPropertyValue('--sq-available-width'))===956);
- const home=await page.getByRole('button',{name:'Play',exact:true}).last().evaluate(n=>({play:n.getBoundingClientRect().toJSON(),info:document.querySelector('.menu-ui>.info').getBoundingClientRect().toJSON()}));
+ const home=await page.locator('button:visible').filter({hasText:/^\s*Play\s*$/}).last().evaluate(n=>({play:n.getBoundingClientRect().toJSON(),info:document.querySelector('.menu-ui>.info').getBoundingClientRect().toJSON()}));
  console.log('Landscape home bounds: '+JSON.stringify(home));
  await page.screenshot({path:new URL('after-home-landscape.png',output).pathname.replace(/^\/([A-Za-z]:)/,'$1')});
  assert.ok(home.info.top>=home.play.bottom-1,'Home credits must not overlap menu buttons');
@@ -52,7 +54,7 @@ try{
 
  assert.equal(await page.locator('.overall-mobile-drawer .leaderboard-arcade').count(),0);
  await page.setViewportSize({width:440,height:780});await page.locator('#closeOverallLeaderboard').click();
- await page.getByRole('button',{name:'Play',exact:true}).last().click();
+ await page.locator('button:visible').filter({hasText:/^\s*Play\s*$/}).last().click();
  await page.locator('.track-selection-ui:not(.hidden)').waitFor({state:'visible'});
  const tracks=await page.locator('.tracks-container.open .track:not(.hidden)').evaluateAll(nodes=>nodes.map(n=>({name:n.querySelector('.track-title')?.textContent,rect:n.getBoundingClientRect().toJSON(),image:n.querySelector('.thumbnail')?.getBoundingClientRect().toJSON()})));
  assert.equal(tracks.length,17);assert.ok(tracks.every(n=>n.rect.x>=0&&n.rect.right<=440));assert.ok(Math.max(...tracks.map(n=>n.rect.width))-Math.min(...tracks.map(n=>n.rect.width))<2);
