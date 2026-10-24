@@ -16,7 +16,7 @@ function fixture(){
     'snapshot-current.json':JSON.stringify({currentdir:'public-snapshots1'}),
     'public-snapshots1/index.json':JSON.stringify({schemaVersion:1,generation:1,encoding:'gzip-xor-a7-v1',files:Object.fromEntries(['overall-manifest.json','overall-preview.json','overall-pages/1.json'].map(name=>[name,{path:id+'.bin',sha256:id,decodedBytes:payload.length}]))}),
     'public-snapshots1/bootstrap-fast.json':JSON.stringify({schemaVersion:1,generation:1,encoding:'gzip-xor-a7-v1',compactIndexVersion:1,partial:true,fallbackIndex:'index.json',files:Object.fromEntries(['overall-manifest.json','overall-preview.json','overall-pages/1.json'].map(name=>[name,[id,payload.length]]))}),
-    'tools/public-snapshot-client.mjs':'/* reader */','tools/snapshot-metadata-recovery.mjs':'/* metadata */','events/client.mjs':'/* events */',
+    'tools/unique-profile-name.mjs':'/* atomic names */','tools/public-snapshot-client.mjs':'/* reader */','tools/snapshot-metadata-recovery.mjs':'/* metadata */','events/client.mjs':'/* events */',
     ['public-snapshots1/'+id+'.bin']:payload,
     'site-version.json':'{}','main.bundle.js':'/* game */','polytrack_062_patch.js':'/* patch */','simulation_worker.bundle.js':'/* worker */','polytrack_physics.wasm':'wasm fixture'
   }).map(([k,v])=>[k,Buffer.from(v)]));

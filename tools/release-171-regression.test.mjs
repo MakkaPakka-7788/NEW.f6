@@ -15,7 +15,7 @@ test('transaction callback read failure is not an SDK FirebaseError retry',async
 });
 test('all client transaction call sites use the callback guard',()=>{
   assert.equal((source.match(/\.runTransaction\(/g)||[]).length,1);
-  assert.equal((source.match(/await runFirebaseTransaction\(/g)||[]).length,4);
+  assert.equal((source.match(/await runFirebaseTransaction\(/g)||[]).length,6);
 });
 test('temporary network failures retain normal SDK recovery',async()=>{
   const context=vm.createContext({Error,noteFirebaseQuota:()=>assert.fail('not quota')});
@@ -32,8 +32,8 @@ test('a conflict followed by a faster PB does not confirm the discarded upload',
   assert.ok(start>=0&&end>start);
   const ref={},profileRef={},raceRow={timeMs:100,uploadId:1,totalPlaytimeMs:0};
   const current={timeMs:50,uploadId:2};
-  const context=vm.createContext({ref,profileRef,raceRow,d:{},timeMs:100,reconcileGuard:null,accountId:'me',ownerUid:'owner',name:'Racer',countryCode:'',carStyle:'car',createdAt:10,localAccountCreatedAt:1,localPbFloor:0,overallPbFloor:0,Math,Number,Date,
-    canonicalRaceTimeMs:row=>row?.timeMs||0,assertCloudOwner:()=>{},window:{firebase:{firestore:{FieldValue:{serverTimestamp:()=>10}}}},
+  const context=vm.createContext({ref,profileRef,raceRow,d:{},timeMs:100,reconcileGuard:null,accountId:'me',ownerUid:'owner',requestedPublicName:'Racer',showPublicNameAdjustment:()=>{},name:'Racer',countryCode:'',carStyle:'car',createdAt:10,localAccountCreatedAt:1,localPbFloor:0,overallPbFloor:0,Math,Number,Date,
+    canonicalRaceTimeMs:row=>row?.timeMs||0,claimCloudProfileName:async (_d,_tx,_id,_owner,_previous,name)=>name,assertCloudOwner:()=>{},window:{firebase:{firestore:{FieldValue:{serverTimestamp:()=>10}}}},
     runFirebaseTransaction:async(_database,callback)=>{for(const existing of [null,current])await callback({get:async target=>target===ref?{exists:!!existing,data:()=>existing}:{exists:true,data:()=>({accountCreatedAt:1,pbCount:2})},set:()=>{}});}});
   const result=await vm.runInContext('(async()=>{'+source.slice(start,end)+'return {saved,savedRow};})()',context);
   assert.equal(result.saved,false);assert.equal(result.savedRow.uploadId,2);

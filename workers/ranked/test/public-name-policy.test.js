@@ -102,3 +102,8 @@ test('profile notification and identity update reuse the pure policy without mod
   assert.match(update, /safePublicName\(identity\.name, accountId\)/);
   assert.doesNotMatch(notify, /moderationNames/);
 });
+
+test('requested exact names are blocked without banning harmless longer handles',()=>{
+  for(const name of ['Remlover','reml0ver','Remlover42','pOrP','porp123'])assert.equal(moderatePublicName(name).blocked,true,name);
+  for(const name of ['Porpoise','Porphyry','AwesomeRemloverFan'])assert.equal(moderatePublicName(name).blocked,false,name);
+});
