@@ -91,4 +91,6 @@ jobs:
     uses: ./.github/workflows/publish-verified-snapshots.yml
     with:
       publication_changed: true
-    # Deliberately no secrets inheritance. Capture uses public endpoints only.
+    # Forward only the existing privileged credential to bounded capture; no blanket inheritance.
+    secrets:
+      FIREBASE_VERIFIER_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_VERIFIER_SERVICE_ACCOUNT }}

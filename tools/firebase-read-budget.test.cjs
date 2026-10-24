@@ -71,7 +71,7 @@ test('assignment cache expires at the actual event reset and local assignment is
   vm.createContext(ctx);vm.runInContext(extract('chooseEventReadValue'),ctx);vm.runInContext(extract('eventCloudRead'),ctx);
   await ctx.eventCloudRead('/v1/events/catalog','public','catalog');
   assert.ok(Math.abs(cache.get('/v1/events/catalog').until-(at+20000))<10);
-  const body=extract('loadEventCloudRead'),localIndex=body.indexOf('localEventCatalog()'),liveFetchIndex=body.indexOf('fetch(rankedBrokerUrl()');
+  const body=extract('loadEventCloudRead'),localIndex=body.indexOf('readEventCatalog()'),liveFetchIndex=body.indexOf('rankedFetch(rankedBrokerUrl()');
   assert.ok(localIndex>=0&&liveFetchIndex>=0&&localIndex<liveFetchIndex);
 });
 test('best result fallback excludes fields with fewer than five racers',()=>{

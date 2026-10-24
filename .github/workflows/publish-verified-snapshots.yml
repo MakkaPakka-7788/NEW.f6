@@ -2,6 +2,9 @@ name: Publish verified public snapshots
 
 on:
   workflow_call:
+    secrets:
+      FIREBASE_VERIFIER_SERVICE_ACCOUNT:
+        required: true
     inputs:
       publication_changed:
         required: true
@@ -36,7 +39,7 @@ jobs:
         run: node tools/extra-verification-check.mjs
       - name: Test snapshot integrity and resumable capture
         # Offline safeguards run before any production reads.
-        run: node --test --test-concurrency=2 tools/snapshot-lookup.test.mjs tools/public-snapshot-backup.test.mjs tools/published-snapshot-pages.test.mjs tools/public-event-totals-backup.test.mjs tools/snapshot-package.test.mjs tools/public-snapshot-client.test.mjs tools/track-snapshot-paging.test.mjs tools/update-public-snapshot.test.mjs tools/snapshot-retry-workflow.test.mjs tools/merge-frozen-event-catalog-workflow.test.mjs tools/sync-event-catalog.test.mjs
+        run: node --test --test-concurrency=2 tools/snapshot-lookup.test.mjs tools/public-snapshot-backup.test.mjs tools/published-snapshot-pages.test.mjs tools/public-event-totals-backup.test.mjs tools/snapshot-package.test.mjs tools/public-snapshot-client.test.mjs tools/track-snapshot-paging.test.mjs tools/update-public-snapshot.test.mjs tools/snapshot-export-auth.test.mjs tools/snapshot-export-auth-workflow.test.mjs tools/public-profile-replay-export.test.mjs tools/snapshot-retry-workflow.test.mjs tools/merge-frozen-event-catalog-workflow.test.mjs tools/sync-event-catalog.test.mjs
       # Workflow-private state, NOT secret storage: only public binding IDs and
       # retry timestamps/counters. Never cache the raw export checkpoint or repo.
       - name: Restore private replay retry ledger
@@ -118,6 +121,9 @@ jobs:
         id: snapshot
         if: steps.catalog.outputs.capture_status == 'complete'
         # Only changed/missing trusted normal replays are fetched; bounded to 100 documents.
+        # Bounded authenticated reads only. No credential reaches catalog, cache, tests, or publishing.
+        env:
+          FIREBASE_VERIFIER_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_VERIFIER_SERVICE_ACCOUNT }}
         run: node tools/update-public-snapshot.mjs --refresh-replays
       - name: Index all saved frozen event periods
         if: always() && !cancelled() && steps.catalog.outcome == 'success' && steps.catalog.outputs.capture_status == 'complete'

@@ -2,6 +2,7 @@
 const {LIMITS} = require('./replay.cjs');
 const reviewed = require('./track-geometry.json');
 const byName = new Map(reviewed.tracks.map(track => [track.name, track]));
+const byTrustedName = new Map(reviewed.tracks.map(track => [`trusted/${track.id}.track`, track]));
 
 function geometryDecision(track, engineDigest) {
   const {parts, spanX, spanZ} = track.geometry;
@@ -10,7 +11,8 @@ function geometryDecision(track, engineDigest) {
     return {reason: 'track_geometry_limit', geometryPolicy: 'rejected'};
   }
   if (parts <= LIMITS.trackParts) return {reason: null, geometryPolicy: 'default'};
-  const pinned = byName.get(track.name);
+  // Event descriptors have a transport name, not the reviewed static source path.
+  const pinned = byName.get(track.name) || (track.trusted === true && byTrustedName.get(track.name));
   // Exceptions are exact reviewed artifacts, never a raised cap for unknown geometry.
   if (engineDigest === reviewed.engineDigest && pinned && pinned.hash === track.hash && pinned.id === track.id &&
       pinned.parts === parts && pinned.spanX === spanX && pinned.spanZ === spanZ) {

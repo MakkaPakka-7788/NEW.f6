@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import {createRequire} from 'node:module';
 const fontCss='@font-face{font-family:ForcedSquare;src:url(data:font/woff2;base64,'+fs.readFileSync(new URL('../forced_square.woff2',import.meta.url)).toString('base64')+') format("woff2")}body{font-family:ForcedSquare,sans-serif}';
 const require=createRequire(import.meta.url);
-let chromium;try{({chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'));}catch{}
+let chromium;try{({chromium}=require(process.env.PLAYWRIGHT_MODULE||'../tools/verifier/node_modules/playwright'));}catch{}
 const moduleSource=fs.readFileSync(new URL('./catalog-ui.mjs',import.meta.url),'utf8');
 const reviewSource=fs.readFileSync(new URL('./review.mjs',import.meta.url),'utf8');
 const reviewedModules = new Map(['reviewed.mjs', 'reviewed-data.mjs'].map(name => [name, fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8')]));
@@ -193,8 +193,8 @@ test('local review filter and ordering include ratings and update after a review
   await page.locator('.sq-extra-review-field select').selectOption('edited');assert.deepEqual(await names(),['Beta']);
   await page.locator('.sq-extra-review-field select').selectOption('not-edited');assert.deepEqual(await names(),['Alpha','Gamma']);
   await page.locator('.sq-extra-review-field select').selectOption('all');
-  await page.locator('.sq-extra-sort-controls select').selectOption('edited-first');assert.deepEqual(await names(),['Beta','Alpha','Gamma']);
-  await page.locator('.sq-extra-sort-controls select').selectOption('unedited-first');assert.deepEqual(await names(),['Alpha','Gamma','Beta']);
+  await page.locator('.sq-extra-sort-controls select').selectOption('my-reviews');assert.deepEqual(await names(),['Beta','Alpha','Gamma']);
+  await page.locator('.sq-extra-sort-direction').click();assert.deepEqual(await names(),['Alpha','Gamma','Beta']);
   await page.locator('.sq-extra-sort-controls select').selectOption('my-rating');assert.equal((await names())[0],'Beta');
   await page.evaluate(()=>{reviews[0]={rating:10};catalog.refresh();});assert.equal((await names())[0],'Alpha');
   await page.evaluate(()=>{reviews[0]={rating:0};catalog.refresh();});assert.equal((await names())[0],'Beta');
@@ -240,7 +240,7 @@ test('desktop and compact discovery keep filters accessible with optional Static
    assert.equal(await toggle.textContent(),'Filters','Sort is not counted as a hidden filter');
    const rect=await toggle.boundingBox();assert.ok(rect&&rect.y>=0&&rect.y+rect.height<=height&&rect.height>=44);
    await shot('catalog-collapsed-'+width);
-   await search.focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');assert.equal(await toggle.evaluate(node=>node===document.activeElement),true);
+   await search.focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');await page.keyboard.press('Tab');assert.equal(await toggle.evaluate(node=>node===document.activeElement),true);
    await page.keyboard.press('Enter');
    for(const label of ['Source','Tag','Catalog level','Progress','Review status','Sort','Rating','Difficulty','Votes'])assert.equal(await page.getByLabel(label,{exact:true}).isVisible(),true,label+' is exposed');
    await page.getByLabel('Rating',{exact:true}).selectOption('6');
@@ -301,4 +301,70 @@ test('desktop and compact discovery keep filters accessible with optional Static
   for(const [query,names] of Object.entries(results))assert.equal(names.length,1,'native plain search: '+query);
   assert.deepEqual(results.Wintertide,results.winterrtibe);
  }finally{await browser.close();}
+});
+
+test('metric direction is keyboard accessible and compact published filters retain selections across resize', {skip:!chromium}, async () => {
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage({viewport:{width:1366,height:900},hasTouch:true});
+  const requests=[];
+  await page.route('**/*',route=>{
+   const url=route.request().url(),pathname=new URL(url).pathname.slice(1);
+   if(reviewedModules.has(pathname))return route.fulfill({contentType:'text/javascript',body:reviewedModules.get(pathname)});
+   if(pathname==='catalog-ui.mjs')return route.fulfill({contentType:'text/javascript',body:moduleSource});
+   if(pathname==='review.mjs')return route.fulfill({contentType:'text/javascript',body:reviewSource});
+   if(url==='http://direction.test/')return route.fulfill({contentType:'text/html',body:'<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0}</style><main id="root"></main>'});
+   requests.push(url);return route.abort();
+  });
+  await page.goto('http://direction.test/');await page.addStyleTag({content:fontCss+css});await page.evaluate(()=>document.fonts.ready);
+  const entries=JSON.parse(fs.readFileSync(new URL('./catalog.json',import.meta.url),'utf8')).slice(0,3).map(({thumbnailUrl,...entry})=>({...entry,tier:'Curated'}));
+  await page.evaluate(async entries=>{
+   const {mountExtraTracks}=await import('/catalog-ui.mjs');
+   window.catalog=mountExtraTracks({document,root:document.querySelector('#root'),entries,getFeedback:()=>({favorite:true})});catalog.open();
+  },entries);
+  const sort=page.getByLabel('Sort',{exact:true}),direction=page.locator('.sq-extra-sort-direction');
+  assert.equal(await direction.isDisabled(),true);
+  const labels=await sort.locator('option').allTextContents();
+  assert.equal(new Set(labels).size,labels.length);
+  for(const label of ['Name','Rating','Difficulty','Votes'])assert.ok(labels.includes(label));
+  assert.ok(labels.every(label=>!/:|first|A-Z|10 to 1|1 to 10/.test(label)),'metric labels are not directional');
+  const names=()=>page.locator('.sq-extra-card h3').allTextContents();
+  await sort.selectOption('name');const ascending=await names();
+  await direction.focus();await page.keyboard.press('Enter');
+  assert.deepEqual(await names(),[...ascending].reverse());
+  assert.match(await direction.getAttribute('aria-label'),/descending.*Switch to ascending/);
+  assert.equal(await direction.evaluate(node=>node===document.activeElement),true);
+  await page.keyboard.press('Space');assert.deepEqual(await names(),ascending);
+  await page.locator('.sq-extra-advanced-toggle').click();
+  await page.getByLabel('My favorites',{exact:true}).check();await page.getByLabel('Curated only',{exact:true}).check();
+  await page.getByLabel('Rating',{exact:true}).selectOption('6');
+  const filtered=[...await names()].sort(),qualityOptions=await page.getByLabel('Rating',{exact:true}).locator('option').allTextContents();
+  await sort.selectOption('review-quality');await direction.focus();await page.keyboard.press('Enter');
+  assert.deepEqual([...await names()].sort(),filtered);
+  assert.deepEqual(await page.getByLabel('Rating',{exact:true}).locator('option').allTextContents(),qualityOptions);
+  for(const [width,height] of [[1366,900],[820,1180],[390,844],[320,568],[844,320]]) {
+   await page.setViewportSize({width,height});
+   assert.equal(await page.getByLabel('Rating',{exact:true}).inputValue(),'6');
+   assert.equal(await page.getByLabel('My favorites',{exact:true}).isChecked(),true);
+   assert.equal(await page.getByLabel('Curated only',{exact:true}).isChecked(),true);
+   const layout=await page.locator('.sq-extra-controls').evaluate(el=>{
+    const box=node=>{const r=node.getBoundingClientRect();return {x:r.x,right:r.right,y:r.y,bottom:r.bottom,width:r.width,height:r.height};};
+    return {overflow:el.scrollWidth>el.clientWidth+1,sort:box(el.querySelector('.sq-extra-sort-controls')),arrow:box(el.querySelector('.sq-extra-sort-direction')),fields:[...el.querySelectorAll('.sq-extra-reviewed-controls .sq-extra-field')].map(box),checks:[...el.querySelectorAll('.sq-extra-check')].map(box)};
+   });
+   assert.equal(layout.overflow,false,'no toolbar overflow at '+width);
+   assert.ok(layout.sort.width<=300,'Sort is bounded rather than stretching at '+width);
+   assert.ok(layout.arrow.width>=44&&layout.arrow.height>=44,'direction has a touch target');
+   assert.ok(Math.abs(layout.checks[0].y-layout.checks[1].y)<1,'Favorites and Curated share a row');
+   for(const field of layout.fields)assert.ok(field.x>=0&&field.right<=width,'published fields fit');
+   if(width>=601)assert.ok(layout.fields.every(field=>Math.abs(field.y-layout.fields[0].y)<1),'three published metrics share one row');
+   if(width===390)assert.ok(layout.fields[0].width>=160,'mobile rating retains room for its selected score and count');
+   if(process.env.POLYTRACK_AUDIT_SCREENSHOT_DIR&&[1366,390,320].includes(width)) {
+    await page.evaluate(()=>document.querySelector('.sq-extra-menu').scrollTop=0);
+    await page.screenshot({path:process.env.POLYTRACK_AUDIT_SCREENSHOT_DIR+'/extra-direction-'+width+'.png'});
+   }
+  }
+  await page.getByRole('button',{name:'Reset filters',exact:true}).click();
+  assert.equal(await sort.inputValue(),'recommended');assert.equal(await direction.isDisabled(),true);
+  assert.deepEqual(requests,[],'all UI interactions stay offline');
+ } finally {await browser.close();}
 });

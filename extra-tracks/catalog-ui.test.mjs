@@ -492,7 +492,7 @@ test('sort, callbacks and attribution use the original entry and safe links', as
   const { root, api } = fixture([dangerous, popular], { onPlay: async item => { played.push(item); } });
   api.open();
   const sort = tag(field(root, 'Sort'), 'select')[0];
-  assert.match(sort.textContent, /Most plays/);
+  assert.match(sort.textContent, /Plays/);
   assert.doesNotMatch(sort.textContent, /Most chosen/);
   sort.value = 'plays'; sort.dispatch('change');
   assert.match(cls(root, 'sq-extra-card')[0].textContent, /Track 02/);
@@ -554,8 +554,8 @@ test('size sorting uses actual catalog byte sizes and keeps missing sizes last',
   const { root, api } = fixture(entries);
   api.open();
   const sort = tag(field(root, 'Sort'), 'select')[0];
-  assert.match(sort.textContent, /Largest track/);
-  assert.match(sort.textContent, /Smallest track/);
+  assert.match(sort.textContent, /Track size/);
+  assert.equal(sort.children.filter(option => option.value === 'size').length, 1);
   const names = () => cls(root, 'sq-extra-card').map(card => tag(card, 'h3')[0].textContent);
   sort.value = 'size-largest'; sort.dispatch('change');
   assert.deepEqual(names(), ['Large', 'Medium', 'Small', 'Invalid', 'Unknown']);
@@ -567,7 +567,7 @@ test('size sorting uses actual catalog byte sizes and keeps missing sizes last',
 test('size sorting is omitted when code byte sizes are unavailable', () => {
   const { root, api } = fixture([entry(1), entry(2, { sizeBytes: '12' }), entry(3, { sizeBytes: -1 })]);
   const sort = tag(field(root, 'Sort'), 'select')[0];
-  assert.doesNotMatch(sort.textContent, /Largest code|Smallest code/);
+  assert.doesNotMatch(sort.textContent, /Track size/);
   api.destroy();
 });
 
@@ -579,7 +579,7 @@ test('refresh updates data-dependent sort choices and falls back when selected d
   const { root, api } = fixture(entries);
   api.open();
   const sort = tag(field(root, 'Sort'), 'select')[0];
-  assert.doesNotMatch(sort.textContent, /Largest track|Most plays|Forum activity|Newest Track/);
+  assert.doesNotMatch(sort.textContent, /Track size|Plays|Forum activity|Track date/);
 
   entries[0].sizeBytes = 30;
   entries[1].sizeBytes = 10;
@@ -587,17 +587,17 @@ test('refresh updates data-dependent sort choices and falls back when selected d
   entries[0].sourceUpvotes = 2;
   entries[0].submittedAt = '2026-10-18T12:00:00Z';
   api.refresh();
-  assert.match(sort.textContent, /Largest track/);
-  assert.match(sort.textContent, /Most plays/);
+  assert.match(sort.textContent, /Track size/);
+  assert.match(sort.textContent, /Plays/);
   assert.match(sort.textContent, /Forum activity/);
-  assert.match(sort.textContent, /Newest Track/);
+  assert.match(sort.textContent, /Track date/);
 
   sort.value = 'size-largest'; sort.dispatch('change');
   assert.deepEqual(cls(root, 'sq-extra-card').map(card => tag(card, 'h3')[0].textContent), ['Alpha', 'Bravo']);
   entries[0].sizeBytes = undefined;
   entries[1].sizeBytes = undefined;
   api.refresh();
-  assert.doesNotMatch(sort.textContent, /Largest track|Smallest track/);
+  assert.doesNotMatch(sort.textContent, /Track size/);
   assert.equal(sort.value, 'recommended', 'a removed sort capability does not leave a stale selected sort');
   api.destroy();
 });
@@ -1126,17 +1126,18 @@ test('review sort labels stay short while the selected control exposes the full 
   const {root, api} = fixture(entries); api.open();
   const sort = tag(field(root, 'Sort'), 'select')[0];
   for (const [value, label, description] of [
-    ['review-quality-high','Rating: 10 to 1','Published ratings, highest first (10 to 1)'],
-    ['review-quality-low','Rating: 1 to 10','Published ratings, lowest first (1 to 10)'],
-    ['review-difficulty-high','Difficulty: 10 to 1','Published difficulty, hardest first (10 to 1)'],
-    ['review-difficulty-low','Difficulty: 1 to 10','Published difficulty, easiest first (1 to 10)'],
-    ['review-votes-high','Votes: highest first','Published net votes, highest first'],
-    ['review-votes-low','Votes: lowest first','Published net votes, lowest first']
+    ['review-quality-high','Rating','Published ratings, highest first (10 to 1)'],
+    ['review-quality-low','Rating','Published ratings, lowest first (1 to 10)'],
+    ['review-difficulty-high','Difficulty','Published difficulty, hardest first (10 to 1)'],
+    ['review-difficulty-low','Difficulty','Published difficulty, easiest first (1 to 10)'],
+    ['review-votes-high','Votes','Published net votes, highest first'],
+    ['review-votes-low','Votes','Published net votes, lowest first']
   ]) {
-    const option = sort.children.find(child => child.value === value);
+    const metric = value.replace(/-(high|low)$/, '');
+    const option = sort.children.find(child => child.value === metric);
     assert.equal(option.textContent, label);assert.ok(label.length <= 20);
-    assert.equal(option.getAttribute('aria-label'), description);
     sort.value = value; await sort.dispatch('change');
+    assert.equal(sort.value, metric, 'legacy directional choices migrate to one metric');
     assert.equal(sort.title, description);assert.equal(sort.getAttribute('aria-description'), description);
   }
   sort.value = 'recommended'; await sort.dispatch('change');
@@ -1208,4 +1209,71 @@ test('published cards retain grades without the redundant vote tally',()=>{
  assert.equal(cls(root,'sq-extra-reviewed-votes').length,0);
  assert.doesNotMatch(cls(root,'sq-extra-grid')[0].textContent,/Votes:.*up.*down/);
  api.destroy();
+});
+
+test('direction toggles keep unknown local ratings last, refresh correctly and reset to fixed recommendation', async () => {
+  const feedback = {1: {rating: 8}, 2: {rating: 3}, 3: {rating: 8}, 4: {}};
+  const entries = [1, 2, 3, 4].map(n => entry(n, {name: ['Zulu', 'Beta', 'Alpha', 'Missing'][n - 1]}));
+  const {root, api} = fixture(entries, {getFeedback: e => feedback[Number(e.id.split('-')[1])], getLocalRating: e => feedback[Number(e.id.split('-')[1])].rating});
+  api.open();
+  const sort = tag(field(root, 'Sort'), 'select')[0], direction = cls(root, 'sq-extra-sort-direction')[0];
+  const names = () => cls(root, 'sq-extra-card').map(card => tag(card, 'h3')[0].textContent);
+  assert.equal(direction.disabled, true);
+  sort.value = 'my-rating'; await sort.dispatch('change');
+  assert.deepEqual(names(), ['Alpha', 'Zulu', 'Beta', 'Missing']);
+  assert.match(direction.getAttribute('aria-label'), /descending.*Switch to ascending/);
+  await click(direction);
+  assert.deepEqual(names(), ['Beta', 'Alpha', 'Zulu', 'Missing']);
+  assert.match(direction.getAttribute('aria-label'), /ascending.*Switch to descending/);
+  feedback[1].rating = 1; api.refresh();
+  assert.deepEqual(names(), ['Zulu', 'Beta', 'Alpha', 'Missing']);
+  api.close(); api.open();
+  assert.match(direction.getAttribute('aria-label'), /ascending/);
+  sort.value = 'name'; await sort.dispatch('change');
+  assert.deepEqual(names(), ['Alpha', 'Beta', 'Missing', 'Zulu']);
+  await click(direction);
+  assert.deepEqual(names(), ['Zulu', 'Missing', 'Beta', 'Alpha']);
+  await click(cls(root, 'sq-extra-clear')[0]);
+  assert.equal(sort.value, 'recommended'); assert.equal(direction.disabled, true);
+  api.destroy();
+});
+
+test('one choice per metric and direction changes reset pagination without changing active filters', async () => {
+  const entries = Array.from({length: 26}, (_, i) => entry(i + 1, {tier: 'Curated', sizeBytes: i + 1}));
+  const {root, api} = fixture(entries, {getFeedback: () => ({favorite: true})}); api.open();
+  const sort = tag(field(root, 'Sort'), 'select')[0], direction = cls(root, 'sq-extra-sort-direction')[0];
+  assert.equal(sort.children.filter(o => o.value === 'size').length, 1);
+  assert.ok(sort.children.every(o => !/-(high|low|largest|smallest|newest|oldest|first)$/.test(o.value)));
+  const favorites = tag(cls(root, 'sq-extra-quick-filters')[0], 'input')[0];
+  favorites.checked = true; await favorites.dispatch('change');
+  sort.value = 'size'; await sort.dispatch('change');
+  await click(tag(cls(root, 'sq-extra-pagination')[0], 'button')[1]);
+  assert.match(cls(root, 'sq-extra-pagination')[0].textContent, /Page 2 of 3/);
+  await click(direction);
+  assert.match(cls(root, 'sq-extra-pagination')[0].textContent, /Page 1 of 3/);
+  assert.equal(tag(cls(root, 'sq-extra-card')[0], 'h3')[0].textContent, entries[0].name);
+  assert.equal(favorites.checked, true);
+  assert.equal(cls(root, 'sq-extra-count')[0].textContent, '26 of 26 tracks');
+  api.destroy();
+});
+
+test('published metric arrow toggles preserve missing-last ordering and filter counts', async () => {
+  const entries = JSON.parse(fs.readFileSync(new URL('./catalog.json', import.meta.url), 'utf8')).slice(0, 3);
+  const {root, api} = fixture([...entries, entry(99, {name: 'Unknown', trackId: 'f'.repeat(64)})]); api.open();
+  const sort = tag(field(root, 'Sort'), 'select')[0], direction = cls(root, 'sq-extra-sort-direction')[0];
+  const names = () => cls(root, 'sq-extra-card').map(card => tag(card, 'h3')[0].textContent);
+  for (const metric of ['review-quality', 'review-difficulty', 'review-votes']) {
+    sort.value = metric; await sort.dispatch('change');
+    assert.equal(names().at(-1), 'Unknown');
+    const descending = names();
+    await click(direction); assert.equal(names().at(-1), 'Unknown');
+    await click(direction); assert.deepEqual(names(), descending);
+  }
+  const quality = tag(field(root, 'Rating'), 'select')[0];
+  quality.value = '6'; await quality.dispatch('change');
+  const options = quality.textContent, filtered = [...names()].sort();
+  await click(direction);
+  assert.deepEqual([...names()].sort(), filtered); assert.equal(quality.textContent, options);
+  assert.equal(cls(root, 'sq-extra-advanced-toggle')[0].textContent, 'Filters (1)');
+  api.destroy();
 });

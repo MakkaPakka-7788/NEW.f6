@@ -3,6 +3,15 @@
   "engineDigest": "7cd54f05e02b66c67133fd856f025c829c21d600d8ef6a9071df62b4fb5905c4",
   "tracks": [
     {
+      "id": "60e247f90d43ecaa8b56a4677307094ab0259f36151af23e09fdc824741d3e48",
+      "name": "trusted/60e247f90d43ecaa8b56a4677307094ab0259f36151af23e09fdc824741d3e48.track",
+      "hash": "a6ccd78cc443cd848a41da11d94904d2fffb7647d0ecafca64562eb53480ea2b",
+      "parts": 28470,
+      "spanX": 656,
+      "spanZ": 516,
+      "displayName": "Spite"
+    },
+    {
       "id": "c20b4ee3cd517ca6cae7e43f047548757287fbd08ba81b97892a3ef520159a34",
       "name": "tracks/official/desert1.track",
       "hash": "618d88414d8b02f32d386734554b85a95d3d343598b0635bb7df1652b58c3923",

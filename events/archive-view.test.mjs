@@ -48,7 +48,7 @@ test('archive month navigation rolls years correctly and returns to recent event
  mountArchiveView(root,{periods:[],month:'2026-01',onMonthChange:month=>months.push(month)});
  const buttons=descendants(root,node=>node.tagName==='BUTTON');
  for(const label of ['Previous month','Next month','All saved events'])buttons.find(button=>button.textContent===label).emit('click');
- assert.deepEqual(months,['2025-12','2026-02','']);
+ assert.deepEqual(months,['2026-01','2025-12','2026-01','']);
  assert.match(root.textContent,/Search or filter saved event standings/);
 });
 
@@ -121,7 +121,7 @@ test('unsafe or missing period artwork falls back to bridge thumbnail and snapsh
   assert.equal(descendants(card, node => node.className === 'sq-archive-racer-count')[0].textContent, '1 racer');
 });
 
-test('zero-racer archive cards remain disabled and cannot invoke the snapshot loader', () => {
+test('zero-racer archive cards stay accessible for track practice without fetching empty boards', () => {
   const { root } = archiveFixture();
   let snapshotCalls = 0;
   mountArchiveView(root, {
@@ -130,11 +130,11 @@ test('zero-racer archive cards remain disabled and cannot invoke the snapshot lo
   });
   const card = descendants(root, node => node.tagName === 'DETAILS')[0];
   const summary = descendants(card, node => node.tagName === 'SUMMARY')[0];
-  assert.equal(summary.attributes['aria-disabled'], 'true');
-  assert.equal(summary.tabIndex, -1);
+  assert.equal(summary.attributes['aria-disabled'], undefined);
+  assert.equal(summary.tabIndex, 0);
   card.open = true;
   card.emit('toggle');
-  assert.equal(card.open, false);
+  assert.equal(card.open, true);
   assert.equal(snapshotCalls, 0);
 });
 
@@ -159,8 +159,7 @@ test('archive UI exposes local page controls and accurate practice label', () =>
   assert.match(source, /appendText\(document, pagination, 'button', 'button', 'Next'\)/);
   assert.match(source, /Page \$\{pageInfo\.page\} of \$\{pageInfo\.pageCount\}/);
   assert.match(source, /Track details \/ practice/);
-  assert.match(source, /if \(initialRacers === 0\) disableEmpty\(\)/);
-  assert.match(source, /if \(counts\.racers === 0\) disableEmpty\(\)/);
+  assert.doesNotMatch(source, /disableEmpty/);
 });
 
 test('events UI keeps permanent Rolling live, archives practice-only, and does not publish scoring formulas', () => {
@@ -361,4 +360,32 @@ test('archive search matches the stable ISO end date at a UTC date boundary',()=
  search.value='2025-01-01';search.emit('input');
  assert.equal(descendants(root,node=>node.className==='sq-archive-event').length,1);
  assert.equal(loads,0);
+});
+
+test('month jumps across all saved periods while preserving search, type and order through paging', () => {
+  const {root}=archiveFixture(); let loads=0;
+  const periods=Array.from({length:60},(_,i)=>({id:`event-${i}`,kind:i%2?'daily':'kodub',trackName:'Saved track',endsAt:Date.UTC(2026,9,24-i),racerCount:1}));
+  mountArchiveView(root,{periods,loadSnapshot:()=>{loads++;}});
+  const all=()=>descendants(root,node=>node.tagName==='DETAILS');
+  const daily=descendants(root,node=>node.type==='checkbox'&&node.value==='daily')[0];daily.checked=false;daily.emit('change');
+  const search=descendants(root,node=>node.type==='search')[0];search.value='saved';search.emit('input');
+  const month=descendants(root,node=>node.type==='month')[0];month.value='2026-09';
+  const form=descendants(root,node=>node.tagName==='FORM')[0];form.emit('submit',{preventDefault(){}});
+  assert.equal(all().length,12);assert.ok(all().every(node=>node.dataset.eventKind==='kodub'));
+  assert.ok(root.textContent.includes('Page 2 of 3'));assert.ok(root.textContent.includes('Other months remain available'));
+  descendants(root,node=>node.tagName==='BUTTON'&&node.textContent==='Next')[0].emit('click');
+  assert.ok(root.textContent.includes('Page 3 of 3'));assert.ok(all().every(node=>node.dataset.eventKind==='kodub'));
+  month.value='2020-01';form.emit('submit',{preventDefault(){}});
+  assert.match(root.textContent,/No saved events in 2020-01 match/);assert.equal(all().length,6);
+  assert.equal(loads,0);
+});
+
+test('selection-only and empty archives retain practice actions even without final standings',()=>{
+ const {root}=archiveFixture();let opened=0,imported=0,loads=0;
+ mountArchiveView(root,{periods:[{id:'selection',kind:'kodub',endsAt:100,historyOnly:true,trackId:'a'.repeat(64),author:'Saved author'}],
+   onOpenPeriod:()=>opened++,onImportPeriod:()=>imported++,loadSnapshot:()=>loads++});
+ const card=descendants(root,node=>node.tagName==='DETAILS')[0];card.open=true;card.emit('toggle');
+ for(const button of descendants(card,node=>node.tagName==='BUTTON'))button.emit('click');
+ assert.equal(opened,1);assert.equal(imported,1);assert.equal(loads,0);
+ assert.match(card.textContent,/no final standings or Event RP were captured/);assert.match(card.textContent,/Saved author/);
 });

@@ -1,4 +1,8 @@
 import test from 'node:test';
+import {generateKeyPairSync} from 'node:crypto';
+const fixtureKey=generateKeyPairSync('rsa',{modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+const exportAuth={serviceAccount:{type:'service_account',project_id:'polytrack-052',client_email:'fixture@polytrack-052.iam.gserviceaccount.com',private_key:fixtureKey},
+ oauthFetch:async()=>Response.json({access_token:'fixture-token',token_type:'Bearer',expires_in:3600})};
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -89,7 +93,7 @@ test('cache save never exports full checkpoint or retains resolved failure recor
 
 test('retry ledger survives fresh-run staging rebase without appearing in published snapshots',async t=>{
  const firstRoot=await fixture(t),firstStage=await stage(firstRoot),cacheFile=path.join(firstRoot,'runner','history.json');
- const initial=await updatePublicSnapshot({root:firstRoot,offline:true,refreshReplays:true,log:()=>{},exportPublic:options=>exportPublicProfilesAndReplays({...options,now:now-1000,fetchImpl:missing})});
+ const initial=await updatePublicSnapshot({root:firstRoot,capture:async()=>({}),refreshReplays:true,log:()=>{},exportPublic:options=>exportPublicProfilesAndReplays({...options,now:now-1000,fetchImpl:missing})});
  await run('save',cacheFile,path.join(firstStage,'export-progress.json'),now);
  assert.equal(Object.keys((await read(cacheFile)).records).length,1);
  const secondRoot=await fixture(t);await fs.cp(path.join(firstRoot,initial.directory),path.join(secondRoot,initial.directory),{recursive:true});
@@ -97,7 +101,7 @@ test('retry ledger survives fresh-run staging rebase without appearing in publis
  await fs.copyFile(path.join(firstRoot,'index.html'),path.join(secondRoot,'index.html'));
  const progressFile=path.join(secondRoot,'local-reports','snapshot-staging','export-progress.json');await run('restore',cacheFile,progressFile,now);
  let requests=0;
- const second=await updatePublicSnapshot({root:secondRoot,offline:true,refreshReplays:true,log:()=>{},exportPublic:options=>exportPublicProfilesAndReplays({...options,now,fetchImpl:async()=>{requests++;throw Error('cooldown must survive hydration/rebase');}})});
+ const second=await updatePublicSnapshot({root:secondRoot,capture:async()=>({}),refreshReplays:true,log:()=>{},exportPublic:options=>exportPublicProfilesAndReplays({...options,now,fetchImpl:async()=>{requests++;throw Error('cooldown must survive hydration/rebase');}})});
  assert.equal(requests,0);assert.equal(second.profileReplay.deferredBindingRetries,1);assert.equal(second.profileReplay.complete,false);assert.equal(second.coverage.complete,false);
  const index=await read(path.join(secondRoot,second.directory,'index.json'));
  assert.ok(!Object.keys(index.files).some(name=>/export-progress|history\.json|retry/i.test(name)));
@@ -126,7 +130,7 @@ test('mid-export quota deferral retains checkpointed retry ledger and never adva
  const index=await fs.readFile(path.join(root,published.directory,'index.json'));
  const html=await fs.readFile(path.join(root,'index.html'));
  let calls=0;
- const result=await updatePublicSnapshot({root,refreshReplays:true,capture:async()=>({}),log:()=>{},
+ const result=await updatePublicSnapshot({root,refreshReplays:true,capture:async()=>({}),log:()=>{},exportAuth,
   exportPublic:options=>exportPublicProfilesAndReplays({...options,pageSize:1,now}),
   exportFetch:async(...args)=>++calls===1?missing(...args):new Response('',{status:429})});
  assert.equal(calls,2);assert.equal(result.deferred,true);assert.equal(result.published,false);

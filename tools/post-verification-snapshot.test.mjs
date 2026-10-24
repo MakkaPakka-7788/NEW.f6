@@ -127,7 +127,7 @@ test('sidecar CLI rejects unsupported modes before any production connection', (
 test('caller requires successful changed-publication output and preserves an explicit opt-out', () => {
   const call=verifier.slice(verifier.indexOf('  publish_snapshots:'));
   assert.match(call,/needs: verify/);assert.match(call,/uses: \.\/\.github\/workflows\/publish-verified-snapshots.yml/);
-  assert.match(call,/contents: write/);assert.doesNotMatch(call,/secrets:/);
+  assert.match(call,/contents: write/);assert.match(call,/secrets:\n      FIREBASE_VERIFIER_SERVICE_ACCOUNT: \$\{\{ secrets\.FIREBASE_VERIFIER_SERVICE_ACCOUNT \}\}/);assert.doesNotMatch(call,/secrets: inherit/);
   for (const result of ['success','failure','cancelled','skipped']) for (const needed of ['true','false','',undefined]) for (const enabled of ['true','false','',undefined]) {
     const actual=evaluate(condition(call),{needs:{verify:{result,outputs:{snapshot_needed:needed}}},vars:{POLYTRACK_POST_VERIFY_SNAPSHOTS_ENABLED:enabled}});
     assert.equal(actual,result==='success'&&needed==='true'&&enabled!=='false');
@@ -140,7 +140,7 @@ test('caller requires successful changed-publication output and preserves an exp
 test('reusable publisher is default-branch/repository restricted and cannot wake itself', () => {
   assert.match(publisher,/on:\n  workflow_call:/);
   assert.doesNotMatch(publisher,/^  (schedule|workflow_run|workflow_dispatch|pull_request|pull_request_target|repository_dispatch):/m);
-  assert.doesNotMatch(publisher,/secrets\.|secrets:|download-artifact|github\.event\.workflow_run\./);
+  assert.doesNotMatch(publisher,/secrets: inherit|download-artifact|github\.event\.workflow_run\./);
   const guard=condition(publisher);
   for (const publication_changed of [true,false]) for (const enabled of ['true','false','',undefined]) for (const repository of ['StaticQuasar931/PolyTrack-0.6.3-Ranked','other/fork']) for (const ref of ['refs/heads/main','refs/heads/untrusted']) {
     const actual=evaluate(guard,{inputs:{publication_changed},vars:{POLYTRACK_POST_VERIFY_SNAPSHOTS_ENABLED:enabled},github:{repository,ref,event:{repository:{default_branch:'main'}}}});
@@ -167,10 +167,10 @@ test('publisher reuses the tested retry sanitizer byte-for-byte, never the raw p
   assert.match(step(publisher,'Retain validated private replay retry ledger'),/steps.snapshot.outcome == 'failure'/);
 });
 
-test('all publisher actions are pinned and no admin or full-profile export is enabled', () => {
+test('all publisher actions are pinned and only bounded read-only export is enabled', () => {
   for (const match of publisher.matchAll(/uses: (actions\/[^\s]+)/g)) assert.match(match[1],/@[a-f0-9]{40}$/);
   assert.match(step(publisher,'Capture bounded public snapshots'),/node tools\/update-public-snapshot.mjs --refresh-replays/);
-  assert.doesNotMatch(publisher,/--full-public|archiveExport|FIREBASE_VERIFIER_SERVICE_ACCOUNT|FIREBASE_ADMIN/);
+  assert.doesNotMatch(publisher,/--full-public|archiveExport|FIREBASE_ADMIN/);
 });
 
 test('deferred public captures cannot publish and public commits reuse the robust push helper', () => {
@@ -224,7 +224,7 @@ test('newer main snapshot cannot be overwritten by an older post-verification pu
   assert.equal(git(b,'status','--porcelain').toString(),'');
 });
 
-test('post-verification capture is single-shot, public-only, and never requests archive recovery', () => {
+test('post-verification capture is single-shot, projected read-only, and never requests archive recovery', () => {
   const capture=step(publisher,'Capture bounded public snapshots');
   assert.equal((capture.match(/node tools\/update-public-snapshot.mjs --refresh-replays/g)||[]).length,1);
   assert.doesNotMatch(capture,/continue-on-error|while |until |--full-public|--archive|--admin|curl |sleep /);

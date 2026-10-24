@@ -3,6 +3,11 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import {generateKeyPairSync} from 'node:crypto';
+const fixtureKey = generateKeyPairSync('rsa', {modulusLength:2048}).privateKey.export({type:'pkcs8',format:'pem'});
+const exportAuth = {serviceAccount:{type:'service_account',project_id:'polytrack-052',client_email:'fixture@polytrack-052.iam.gserviceaccount.com',private_key:fixtureKey},
+  oauthFetch:async()=>Response.json({access_token:'fixture-token',token_type:'Bearer',expires_in:3600})};
+
 import { decodeSnapshot } from './snapshot-package.mjs';
 import { updatePublicSnapshot, reportCaptureOutcome } from './update-public-snapshot.mjs';
 
@@ -16,7 +21,7 @@ async function fixture(t) {
 
 test('replay-only refresh has a 100-document cap and does not restart profile scans',async t=>{
  const root=await fixture(t);let options;
- await updatePublicSnapshot({root,offline:true,refreshReplays:true,exportPublic:async value=>{
+ await updatePublicSnapshot({root,capture:async()=>({}),refreshReplays:true,exportPublic:async value=>{
   options=value;return {complete:false,coverage:{complete:false},counts:{recordings:0}};
  },log:()=>{}});
  assert.equal(options.maxDocuments,100);assert.equal(options.includeProfiles,false);assert.equal(options.fullSnapshot,false);
@@ -340,7 +345,7 @@ test('all expected replay HTTP deferrals stop without publishing or retrying', a
   for (const status of [408, 429, 500, 502, 503, 504]) {
     let requests = 0;
     const result = await updatePublicSnapshot({root: f.root, refreshReplays: true, capture: async () => ({}),
-      exportFetch: async () => {requests++; return new Response('', {status});}, log: () => {}});
+      exportAuth, exportFetch: async () => {requests++; return new Response('', {status});}, log: () => {}});
     assert.deepEqual(result, {deferred: true, published: false, phase: 'replays',
       reason: 'Replay export service temporarily unavailable', status, previousPackagePreserved: true});
     assert.equal(requests, 1);
@@ -360,7 +365,7 @@ test('replay fetch and response-stream interruptions defer without publication',
     async () => ({ok: true, status: 200, text: async () => {throw new DOMException('aborted', 'AbortError');}}),
   ]) {
     const result = await updatePublicSnapshot({root: f.root, refreshReplays: true,
-      capture: async () => ({}), exportFetch, log: () => {}});
+      capture: async () => ({}), exportAuth, exportFetch, log: () => {}});
     assert.equal(result.deferred, true); assert.equal(result.published, false);
     await f.unchanged();
   }
@@ -369,14 +374,14 @@ test('replay fetch and response-stream interruptions defer without publication',
 test('authorization, malformed responses and unexpected export failures remain fatal', async t => {
   const f = await replayCaptureFixture(t);
   for (const [exportFetch, expected] of [
-    [async () => new Response('', {status: 403}), /batchGet failed \(403\)/],
+    [async () => new Response('', {status: 403}), /read permission denied \(403\)/],
     [async () => new Response('not JSON'), /Invalid Firestore batchGet JSON/],
     [async () => Response.json({invalid: true}), /Invalid Firestore batchGet response/],
-    [async () => {throw new Error('unexpected implementation failure');}, /unexpected implementation failure/],
-    [async () => {throw new TypeError('invalid option');}, /invalid option/],
+    [async () => {throw new Error('unexpected implementation failure');}, /Snapshot export transport failed/],
+    [async () => {throw new TypeError('invalid option');}, /Snapshot export transport failed/],
   ]) {
     await assert.rejects(updatePublicSnapshot({root: f.root, refreshReplays: true,
-      capture: async () => ({}), exportFetch, log: () => {}}), expected);
+      capture: async () => ({}), exportAuth, exportFetch, log: () => {}}), expected);
     await f.unchanged();
   }
 });

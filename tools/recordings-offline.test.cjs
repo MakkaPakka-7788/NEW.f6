@@ -51,7 +51,7 @@ test('all cached native recordings bypass an unavailable database',async()=>{
 test('mixed offline recording batches preserve cached rows and leave only misses null',async()=>{
   const local=new Map([[7,{recording:'cached',frames:123,verifiedState:0,carStyle:'style'}]]);
   const fixture=harness(local),rows=await fixture.read([7,8]);
-  assert.equal(fixture.dbCalls(),1);
+  assert.equal(fixture.dbCalls(),0);
   assert.deepEqual(JSON.parse(JSON.stringify(rows)),[{recording:'cached',frames:123,verifiedState:0,carStyle:'style'},null]);
   assert.equal(rows[0].verifiedState,0);
 });
@@ -63,14 +63,14 @@ test('saved replay snapshot fills an offline cache miss without querying the dat
   assert.deepEqual(JSON.parse(JSON.stringify(rows)),[saved]);
 });
 
-test('repeated unavailable recording clicks do not repeat the failed database lookup',async()=>{
+test('repeated unavailable recording clicks never query the database',async()=>{
   const fixture=harness(new Map());await fixture.read([8]);await fixture.read([8]);
-  assert.equal(fixture.dbCalls(),1);
+  assert.equal(fixture.dbCalls(),0);
 });
 
-test('downloaded native replay is reused without another cloud query',async()=>{
+test('downloaded snapshot replay is reused without another snapshot or database query',async()=>{
   const fixture=harness(new Map()),ctx=fixture.context;let reads=0;
-  ctx.db=async()=>({collection:()=>({where:()=>({get:async()=>{reads++;return {docs:[{data:()=>({uploadId:8,replay:'recording',timeMs:100,frames:100})}]};}})})});
+  ctx.readPublicSnapshotBackup=async()=>{reads++;return{recording:'recording',frames:100};};
   ctx.rememberNativeRecording=(id,row)=>ctx.nativeRecordingMemory.set(id,row);
-  const first=await fixture.read([8]);await fixture.read([8]);assert.equal(reads,1);assert.equal(first[0].recording,'recording');
+  const first=await fixture.read([8]);await fixture.read([8]);assert.equal(reads,1);assert.equal(first[0].recording,'recording');assert.equal(fixture.dbCalls(),0);
 });
