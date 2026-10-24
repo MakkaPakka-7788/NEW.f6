@@ -18,18 +18,40 @@ unchanged since an earlier commit still exists at the later commit URL. No purge
 of immutable files or all historical paths is necessary. Old active games retain
 their coherent old tree; new visits discover the newer one.
 
+## Compact Asset Package
+
+jsDelivr returned explicit 50 MB package-size denials for the source tree on
+October 24, 2026. Cached files could still return 200 while other files returned
+403, so one successful icon request did not establish package availability.
+
+Publication now builds a separate `cdn-assets` Git tree. It retains the current
+snapshot and runtime files, omitting obsolete snapshot generations and development
+directories/tests. The source main branch and its history are not deleted or
+rewritten. No private untracked files are read or copied.
+
+Every file in the generated tree must be strictly below 20,000,000 bytes,
+including files outside the initial readiness probes. The publisher separately
+measures the tar archive, including a GitHub-style root prefix, padding and
+headers, and rejects packages at or above 49,000,000 bytes. The archive is a
+measurement, not one large file served to browsers. Identical asset trees reuse
+their existing immutable commit.
+
+The pointer's `commit` is the asset commit, and `sourceCommit` records the main
+commit it was built from. Existing automatic HTML already reads `commit`, so
+this change does not require another Apps Script HTML replacement.
+
 ## Order And Coverage
 
 1. A source or snapshot commit reaches main.
 2. The publisher checks out current main after acquiring its shared release lock.
-3. It checks local snapshot pointers, initial rankings payload bindings and asset
-   paths. It then compares CDN bytes against the committed entry point, its
-   directly referenced files, required module dependencies, native startup images,
-   physics worker/WASM, snapshot bootstrap, and initial rankings payloads. This
-   warms a bounded boot path, not every replay. Hashes use Git blobs, not Windows
-   checkout line endings. The initial 149-asset CDN check passed.
-4. Only then does it fast-forward the dedicated pointer branch. No force push or
-   source working-tree edit is used. A non-ancestor publication fails safely.
+3. It checks local snapshot pointers, all bootstrap bindings and required asset
+   paths, builds the compact asset tree, enforces all per-file limits, measures
+   the package size, and pushes the compact asset branch.
+4. It compares CDN bytes against the committed entry point, directly referenced
+   files, runtime modules, native startup images, physics worker/WASM, snapshot
+   bootstrap, and initial rankings payloads. Only after these pass does it
+   fast-forward the public pointer branch. Hashes use Git blobs, not Windows
+   checkout line endings. No force push or source working-tree edit is used.
 5. It purges only the mutable pointer and verifies the resulting public content.
    Purge acknowledgments alone do not count as success. Retries are bounded.
 
@@ -47,7 +69,7 @@ token with contents:write is needed; no new secret or access token is required.
 
 Commit and push the workflow, tool, tests, and this document to canonical main.
 Check that `Publish CDN release` completes successfully. If repository rules
-prevent creating or updating `cdn-release`, fix that narrowly; do not disable
+prevent creating or updating `cdn-release` or `cdn-assets`, fix that narrowly; do not disable
 main protections or broaden token permissions.
 
 Then replace Apps Script's index HTML with the separately generated private
@@ -68,6 +90,12 @@ CDN propagation is not instantaneous and one runner cannot certify every CDN
 edge or school network. If propagation verification fails after pointer push,
 rerun `Publish CDN release`: it retries the purge without adding a duplicate
 pointer commit. Asset readiness failure leaves the old pointer untouched.
+
+Temporary 403/404, throttling, server errors and network failures get bounded
+backoff of 5, 15, 30 and 60 seconds, with a five-minute readiness budget.
+Retry-After is honored within that budget. Explicit package-size denials fail
+immediately because retrying cannot make an oversized package smaller. Hash
+mismatches remain release-blocking. No additional Firebase operations are added.
 
 If main advances during checkout, rerun publication. Newer capture/push jobs also
 request publication. Superseded pending Actions jobs may be coalesced by GitHub;

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {releasePlan,checkReleaseFiles,refreshReleasePointer,publishRelease,POINTER_URL,REPOSITORY} from './publish-cdn-release.mjs';
+import {releasePlan,checkReleaseFiles,refreshReleasePointer,publishRelease,includeReleaseAsset,assertCdnAssetSizes,POINTER_URL,REPOSITORY} from './publish-cdn-release.mjs';
 
 const sha='a'.repeat(40),hash=b=>createHash('sha256').update(b).digest('hex');
 function fixture(){
@@ -59,6 +59,50 @@ test('failed or wrong CDN bytes stop publication with bounded retries',async()=>
   await assert.rejects(checkReleaseFiles({pointer:{commit:sha},files:[{path:'index.html',sha256:hash('correct')}]},{fetchImpl:async()=>{count++;return response('wrong');},sleep:async()=>{}}),/not advertised/);
   assert.equal(count,3);
 });
+test('transient CDN 403 can recover after the old nine-second retry window',async()=>{
+  let calls=0,time=0;const delays=[],messages=[];
+  await checkReleaseFiles({pointer:{commit:sha},files:[{path:'images/paste.svg',sha256:hash('icon')}]},{
+    fetchImpl:async()=>++calls<4?{ok:false,status:403}:response('icon'),now:()=>time,
+    sleep:async ms=>{delays.push(ms);time+=ms;},log:message=>messages.push(message)});
+  assert.equal(calls,4);assert.deepEqual(delays,[5000,15000,30000]);assert.ok(time>9000);
+  assert.ok(messages.every(message=>message.includes('images/paste.svg')));
+});
+test('persistent CDN errors still fail closed after bounded backoff',async()=>{
+  let calls=0,time=0;
+  await assert.rejects(checkReleaseFiles({pointer:{commit:sha},files:[{path:'images/paste.svg',sha256:hash('icon')}]},{
+    fetchImpl:async()=>{calls++;return {ok:false,status:403};},now:()=>time,
+    sleep:async ms=>{time+=ms;},log:()=>{}}),/not advertised: images\/paste.svg after 5 attempts/);
+  assert.equal(calls,5);assert.equal(time,110000);
+});
+test('Retry-After is respected within the readiness budget',async()=>{
+  let calls=0,time=0;const delays=[];
+  await checkReleaseFiles({pointer:{commit:sha},files:[{path:'index.html',sha256:hash('html')}]},{
+    fetchImpl:async()=>++calls===1?{ok:false,status:429,headers:{get:()=> '45'}}:response('html'),now:()=>time,
+    sleep:async ms=>{delays.push(ms);time+=ms;},log:()=>{}});
+  assert.deepEqual(delays,[45000]);
+});
+test('readiness budget stops further retries instead of waiting indefinitely',async()=>{
+  let calls=0,time=0;
+  await assert.rejects(checkReleaseFiles({pointer:{commit:sha},files:[{path:'index.html',sha256:hash('html')}]},{
+    fetchImpl:async()=>{calls++;time+=110000;return {ok:false,status:503};},now:()=>time,
+    sleep:async ms=>{time+=ms;},log:()=>{}}),/not advertised/);
+  assert.equal(calls,3);
+});
+test('package-size denial is permanent and is not retried as a temporary 403',async()=>{
+  let calls=0;
+  await assert.rejects(checkReleaseFiles({pointer:{commit:sha},files:[{path:'index.html',sha256:hash('html')}]},{
+    fetchImpl:async()=>{calls++;return {ok:false,status:403,text:async()=> 'Package size exceeded the configured limit of 50 MB.'};},
+    sleep:async()=>assert.fail('must not retry package size errors'),log:()=>{}}),/after 1 attempts/);
+  assert.equal(calls,1);
+});
+test('compact tree keeps current snapshots and runtime while excluding old generations and development files',()=>{
+  for(const file of ['index.html','main.bundle.js','images/paste.svg','events/session.mjs','public-snapshots52/abc.bin','tools/public-snapshot-client.mjs'])assert.equal(includeReleaseAsset(file,'public-snapshots52'),true,file);
+  for(const file of ['public-snapshots37/abc.bin','.github/workflows/verify.yml','docs/notes.md','tools/verifier/run.mjs','workers/ranked/test/unit.test.js','tools/example.test.mjs'])assert.equal(includeReleaseAsset(file,'public-snapshots52'),false,file);
+});
+test('every CDN file, not only readiness probes, must be strictly below 20 MB',()=>{
+  assert.doesNotThrow(()=>assertCdnAssetSizes([{path:'large.bin',bytes:19999999}]));
+  for(const bytes of [20000000,20000001,NaN,-1])assert.throws(()=>assertCdnAssetSizes([{path:'large.bin',bytes}]),/under 20,000,000/);
+});
 test('only mutable pointer is purged, then its actual content is checked',async()=>{
   const expected=(await releasePlan({commit:sha,...fixture()})).pointer,calls=[];
   await refreshReleasePointer(expected,{sleep:async()=>{},fetchImpl:async url=>{calls.push(url);return response(JSON.stringify(url.includes('purge.jsdelivr.net')?{status:'finished'}:expected));}});
@@ -80,12 +124,18 @@ test('real local bare remote: no source changes, first publish, no-op repeat, ne
   const remote=path.join(temp,'remote.git');run(temp,['init','--bare','--initial-branch=main',remote]);
   const root=path.join(temp,'work');run(temp,['clone',remote,root]);
   run(root,['config','user.name','Release Test']);run(root,['config','user.email','test@example.invalid']);
-  const f=fixture();for(const [file,bytes]of f.files){await mkdir(path.dirname(path.join(root,file)),{recursive:true});await writeFile(path.join(root,file),bytes);}
+  const f=fixture();f.files.set('public-snapshots0/obsolete.bin',Buffer.from('old snapshot'));for(const [file,bytes]of f.files){await mkdir(path.dirname(path.join(root,file)),{recursive:true});await writeFile(path.join(root,file),bytes);}
   run(root,['add','.']);run(root,['commit','-m','base']);run(root,['push','origin','main']);
   const git=(args,options)=>run(root,args,options), checks=[],purges=[];
   const options={root,branch:'main',repository:REPOSITORY,git,check:async plan=>checks.push(plan),refresh:async pointer=>purges.push(pointer)};
   const first=await publishRelease(options),pointerHead=git(['ls-remote','--heads','origin','cdn-release']).split(/\s/)[0];
   assert.equal(git(['status','--porcelain']),'');
+  assert.ok(first.pointer.sourceCommit);
+  assert.notEqual(first.pointer.commit,first.pointer.sourceCommit);
+  assert.ok(first.assetPackage.archiveBytes<49000000);
+  assert.ok(git(['ls-tree','-r','--name-only',first.pointer.sourceCommit]).includes('public-snapshots0/obsolete.bin'));
+  assert.ok(!git(['ls-tree','-r','--name-only',first.pointer.commit]).includes('public-snapshots0/obsolete.bin'));
+  assert.ok(git(['ls-tree','-r','--name-only',first.pointer.commit]).includes('main.bundle.js'));
   const tree=git(['ls-tree','--name-only',pointerHead]).trim();assert.equal(tree,'release.json');
   await publishRelease(options);
   assert.equal(git(['ls-remote','--heads','origin','cdn-release']).split(/\s/)[0],pointerHead,'repeat repairs purge without creating a commit');
@@ -94,8 +144,13 @@ test('real local bare remote: no source changes, first publish, no-op repeat, ne
   assert.equal(first.pointer.indexSha256,next.pointer.indexSha256);
   assert.notEqual(first.pointer.commit,next.pointer.commit);
   assert.equal(purges.length,3);
+  await mkdir(path.join(root,'docs'),{recursive:true});await writeFile(path.join(root,'docs/notes.md'),'documentation only');git(['add','docs/notes.md']);git(['commit','-m','docs']);git(['push','origin','main']);
+  const documentation=await publishRelease(options);
+  assert.equal(documentation.pointer.commit,next.pointer.commit,'unchanged asset tree reuses immutable CDN commit');
+  assert.notEqual(documentation.pointer.sourceCommit,next.pointer.sourceCommit);
+  assert.equal(purges.length,4);
   await assert.rejects(publishRelease({...options,check:async()=>{throw Error('CDN down');}}),/CDN down/);
-  assert.equal(purges.length,3);
+  assert.equal(purges.length,4);
 });
 test('all file-writing workflows explicitly publish after their push, including token pushes',async()=>{
   const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');

@@ -1,11 +1,13 @@
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {readFile, appendFile} from 'node:fs/promises';
+import {readFile, appendFile, mkdtemp} from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 export const REPOSITORY = 'StaticQuasar931/PolyTrack-0.6.3-Ranked';
 export const POINTER_BRANCH = 'cdn-release';
+export const ASSET_BRANCH = 'cdn-assets';
 export const POINTER_URL = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${POINTER_BRANCH}/release.json`;
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -77,29 +79,101 @@ export async function releasePlan({root, commit, read = file => readFile(path.jo
 
 async function fetchBytes(url, fetchImpl) {
   const response = await fetchImpl(url, {credentials:'omit', cache:'no-store', signal:AbortSignal.timeout(20000), redirect:'error'});
-  if (!response.ok) throw Error('CDN HTTP ' + response.status);
+  if (!response.ok) {
+    const error = Error('CDN HTTP ' + response.status);
+    error.status = response.status;
+    const detail = response.text ? (await response.text()).slice(0,400) : '';
+    if (/Package size exceeded/i.test(detail)) {
+      error.packageLimit = true;
+      error.message = 'CDN package size limit exceeded; a smaller asset tree is required';
+    }
+    const retryAfter = response.headers?.get('retry-after');
+    const delay = /^\d+$/.test(retryAfter || '') ? Number(retryAfter)*1000 : Date.parse(retryAfter)-Date.now();
+    if (Number.isFinite(delay) && delay > 0) error.retryAfterMs = Math.min(delay,120000);
+    throw error;
+  }
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length >= 20000000) throw Error('CDN response too large');
   return bytes;
 }
 
-export async function checkReleaseFiles(plan, {fetchImpl=fetch, sleep=pause}={}) {
+export async function checkReleaseFiles(plan, {fetchImpl=fetch, sleep=pause, now=Date.now, log=console.warn}={}) {
   const base = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${plan.pointer.commit}/`;
   // Bounded concurrency warms the boot path, not every replay or historical file.
   const queue = [...plan.files];
+  const deadline = now() + 5*60*1000;
+  const transient = error => [403,404,408,425,429].includes(error?.status) || error?.status >= 500 && error.status <= 599 || error instanceof TypeError || ['AbortError','TimeoutError'].includes(error?.name);
+  const delays = [5000,15000,30000,60000];
+  let stopped = false;
   await Promise.all(Array.from({length:Math.min(4,queue.length)}, async () => {
-    while (queue.length) {
+    while (queue.length && !stopped) {
       const file = queue.shift();
-      let error;
-      for (let attempt=0; attempt<3; attempt++) {
+      let error, attempts=0;
+      for (let attempt=0; attempt<5; attempt++) {
+        if (stopped) return;
+        if (now() >= deadline) { error=Error('CDN readiness budget exhausted'); break; }
+        attempts++;
         try {
           if (digest(await fetchBytes(base + file.path, fetchImpl)) !== file.sha256) throw Error('CDN bytes differ from committed file');
           error = null; break;
-        } catch (failure) { error = failure; if (attempt<2) await sleep((attempt+1)*3000); }
+        } catch (failure) {
+          error = failure;
+          const limit = failure.packageLimit ? 1 : transient(failure) ? 5 : 3;
+          if (attempt+1 >= limit) break;
+          const delay = Math.max(transient(failure) ? delays[attempt] : (attempt+1)*3000, failure.retryAfterMs || 0);
+          if (now()+delay >= deadline) break;
+          log(`CDN readiness: ${file.path}: ${failure.message}; attempt ${attempt+1}/${limit}, retry in ${Math.ceil(delay/1000)}s`);
+          await sleep(delay);
+        }
       }
-      if (error) throw Error('Release not advertised: ' + file.path, {cause:error});
+      if (error) { stopped=true; throw Error('Release not advertised: ' + file.path + ' after ' + attempts + ' attempts', {cause:error}); }
     }
   }));
+}
+
+export function includeReleaseAsset(file, snapshotDirectory) {
+  const top = file.split('/')[0];
+  if (/^public-snapshots\d+$/.test(top)) return top === snapshotDirectory;
+  if (['.github','.gitignore','docs','AGENTS.md'].includes(top)) return false;
+  if (file.startsWith('tools/verifier/') || file.startsWith('workers/ranked/test/')) return false;
+  if (/\.(?:test|spec|benchmark)\.[cm]?js$/.test(file)) return false;
+  return true;
+}
+
+export function assertCdnAssetSizes(entries) {
+  for (const entry of entries) {
+    if (!Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || entry.bytes >= 20000000) throw Error('CDN file must be under 20,000,000 bytes: '+entry.path);
+  }
+}
+
+export async function publishAssetTree(plan, git) {
+  const source = plan.pointer.commit;
+  const entries = git(['ls-tree','-r','-l','-z',source]).toString().split('\0').filter(Boolean);
+  const selected = entries.map(line => {
+    const match = /^(\d+) blob ([a-f0-9]{40})\s+(\d+)\t([\s\S]+)$/.exec(line);
+    if (!match) throw Error('Unsupported release Git entry');
+    return {mode:match[1],hash:match[2],bytes:Number(match[3]),path:match[4]};
+  }).filter(entry => includeReleaseAsset(entry.path,plan.pointer.snapshotDirectory));
+  assertCdnAssetSizes(selected);
+  const names = new Set(selected.map(entry=>entry.path));
+  if (plan.files.some(file=>!names.has(file.path))) throw Error('Compact package excludes a required boot asset');
+  const temporary = await mkdtemp(path.join(os.tmpdir(),'polytrack-cdn-index-'));
+  const env = {...process.env,GIT_INDEX_FILE:path.join(temporary,'index')};
+  git(['read-tree','--empty'],{env});
+  git(['update-index','-z','--index-info'],{env,input:selected.map(entry=>`${entry.mode} blob ${entry.hash}\t${entry.path}\0`).join('')});
+  const tree = git(['write-tree'],{env}).trim();
+  // Measure the actual tar, including headers/padding, rather than only blob bytes.
+  const archive = git(['archive','--format=tar','--prefix=PolyTrack-0.6.3-Ranked-'+source+'/',tree],{encoding:null,maxBuffer:50000000});
+  if (archive.length >= 49000000) throw Error('Compact CDN archive still exceeds the safe 49 MB publishing budget');
+  const listed = git(['ls-remote','--heads','origin','refs/heads/'+ASSET_BRANCH]).trim();
+  let parent;
+  if (listed) { git(['fetch','--no-tags','origin','refs/heads/'+ASSET_BRANCH]);parent=git(['rev-parse','FETCH_HEAD']).trim();if(!sha(parent))throw Error('Invalid asset parent'); }
+  if (parent && git(['rev-parse',parent+'^{tree}']).trim() === tree) return {commit:parent,archiveBytes:archive.length,files:selected.length};
+  const identity = {...process.env,GIT_AUTHOR_NAME:'github-actions[bot]',GIT_COMMITTER_NAME:'github-actions[bot]',GIT_AUTHOR_EMAIL:'41898282+github-actions[bot]@users.noreply.github.com',GIT_COMMITTER_EMAIL:'41898282+github-actions[bot]@users.noreply.github.com'};
+  const commit = git(['commit-tree',tree,...(parent?['-p',parent]:[])],{env:identity,input:'CDN assets for '+source+'\n'}).trim();
+  if(!sha(commit))throw Error('Invalid asset commit');
+  git(['push','origin',commit+':refs/heads/'+ASSET_BRANCH]);
+  return {commit,archiveBytes:archive.length,files:selected.length};
 }
 
 export async function refreshReleasePointer(expected, {fetchImpl=fetch, sleep=pause}={}) {
@@ -111,7 +185,7 @@ export async function refreshReleasePointer(expected, {fetchImpl=fetch, sleep=pa
       if (purge.status !== 'finished') throw Error('Pointer purge not finished');
       await sleep(3000);
       const actual = JSON.parse((await fetchBytes(POINTER_URL, fetchImpl)).toString('utf8'));
-      if (actual.repository !== REPOSITORY || actual.commit !== expected.commit || actual.indexSha256 !== expected.indexSha256 || actual.snapshotDirectory !== expected.snapshotDirectory) throw Error('Release pointer has not propagated');
+      if (actual.repository !== REPOSITORY || actual.commit !== expected.commit || actual.indexSha256 !== expected.indexSha256 || actual.snapshotDirectory !== expected.snapshotDirectory || expected.sourceCommit && actual.sourceCommit !== expected.sourceCommit) throw Error('Release pointer has not propagated');
       return;
     } catch (error) { failure=error; if (attempt<2) await sleep(20000); }
   }
@@ -127,8 +201,6 @@ export async function publishRelease({root=process.cwd(), branch=process.env.DEF
   if (!sha(commit) || git(['rev-parse','HEAD']).trim() !== commit) throw Error('main moved since checkout; rerun publication');
   // Hash Git blobs, not checkout line endings or uncommitted working files.
   const plan = await releasePlan({root,commit,now,read:async file=>Buffer.from(git(['show',commit + ':' + file],{encoding:null}))});
-  // Nothing is advertised until committed entry assets and initial rankings are readable.
-  await check(plan);
   const listed = git(['ls-remote','--heads','origin','refs/heads/' + POINTER_BRANCH]).trim();
   let parent = null, previous = null;
   if (listed) {
@@ -137,13 +209,23 @@ export async function publishRelease({root=process.cwd(), branch=process.env.DEF
     if (!sha(parent)) throw Error('Invalid pointer history');
     previous = JSON.parse(git(['show',parent + ':release.json']));
     if (previous.repository !== REPOSITORY || !sha(previous.commit)) throw Error('Invalid existing release pointer');
-    if (previous.commit !== commit) {
+    const previousSource = previous.sourceCommit || previous.commit;
+    if (!sha(previousSource)) throw Error('Invalid existing source commit');
+    if (previousSource !== commit) {
       // Do not let a slow/older job roll back an already-published descendant.
-      git(['fetch','--no-tags','origin',previous.commit]);
-      git(['merge-base','--is-ancestor',previous.commit,commit]);
+      git(['fetch','--no-tags','origin',previousSource]);
+      git(['merge-base','--is-ancestor',previousSource,commit]);
     }
   }
-  if (previous?.commit !== commit || previous.indexSha256 !== plan.pointer.indexSha256 || previous.snapshotDirectory !== plan.pointer.snapshotDirectory) {
+  let assets;
+  if (previous?.sourceCommit === commit && previous.indexSha256 === plan.pointer.indexSha256 && previous.snapshotDirectory === plan.pointer.snapshotDirectory) {
+    assets={commit:previous.commit};
+  } else assets=await publishAssetTree(plan,git);
+  plan.pointer={...plan.pointer,sourceCommit:commit,commit:assets.commit};
+  plan.assetPackage=assets;
+  // Assets exist remotely before probing; the public pointer still names the old release.
+  await check(plan);
+  if (previous?.commit !== plan.pointer.commit || previous.sourceCommit !== plan.pointer.sourceCommit || previous.indexSha256 !== plan.pointer.indexSha256 || previous.snapshotDirectory !== plan.pointer.snapshotDirectory) {
     const blob = git(['hash-object','-w','--stdin'], {input:JSON.stringify(plan.pointer)+'\n'}).trim();
     const tree = git(['mktree'], {input:'100644 blob ' + blob + '\trelease.json\n'}).trim();
     const env = {...process.env,GIT_AUTHOR_NAME:'github-actions[bot]',GIT_COMMITTER_NAME:'github-actions[bot]',
@@ -159,7 +241,7 @@ export async function publishRelease({root=process.cwd(), branch=process.env.DEF
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const plan = await publishRelease();
-  const summary = `CDN release confirmed: ${plan.pointer.commit}\nSnapshot: ${plan.pointer.snapshotDirectory}\nValidated ${plan.files.length} immutable boot assets. Purged one mutable release pointer. No Firebase requests.\n`;
+  const summary = `CDN release confirmed: ${plan.pointer.commit}\nSource: ${plan.pointer.sourceCommit}\nSnapshot: ${plan.pointer.snapshotDirectory}\nAsset archive bytes: ${plan.assetPackage.archiveBytes ?? 'reused'}\nValidated ${plan.files.length} immutable boot assets. Purged one mutable release pointer. No Firebase requests.\n`;
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, summary);
 }
