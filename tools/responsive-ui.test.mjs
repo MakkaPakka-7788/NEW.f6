@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {installResponsiveViewport} from './responsive-ui.mjs';
 
-function fixture({width=1366,height=600,visualHeight=height,containerWidth=width}={}){
+function fixture({width=1366,height=600,visualHeight=height,containerWidth=width,rootWidth=width,rootHeight=height,useContainer=true}={}){
   const events=new Map(),visualEvents=new Map(),properties={},frames=new Map();let writes=0,id=0,scrolled=0;
-  const html={style:{setProperty(key,value){properties[key]=value;writes++;}},dataset:{}};
+  const html={clientWidth:rootWidth,clientHeight:rootHeight,style:{setProperty(key,value){properties[key]=value;writes++;}},dataset:{}};
   const window={innerWidth:width,innerHeight:height,visualViewport:{width,height:visualHeight,offsetTop:0,
     addEventListener:(key,fn)=>visualEvents.set(key,fn),removeEventListener:key=>visualEvents.delete(key)},
     addEventListener:(key,fn)=>events.set(key,fn),removeEventListener:key=>events.delete(key),
     requestAnimationFrame:fn=>{frames.set(++id,fn);return id;},cancelAnimationFrame:key=>frames.delete(key)};
   const document={documentElement:html,addEventListener(){},removeEventListener(){},activeElement:{matches:()=>true,closest:()=>true,scrollIntoView:()=>scrolled++}};
   const container={getBoundingClientRect:()=>({width:containerWidth,height})};
-  const dispose=installResponsiveViewport({document,window,container});
+  const dispose=installResponsiveViewport({document,window,container:useContainer?container:undefined});
   const flush=()=>{for(const [id,fn]of frames){frames.delete(id);fn();}};
   return {window,properties,html,dispose,events,visualEvents,frames,flush,writes:()=>writes,scrolled:()=>scrolled};
 }
@@ -40,4 +40,9 @@ test('optional Overall results use the static reader without a Firestore fallbac
   const patch=fs.readFileSync(new URL('../polytrack_062_patch.js',import.meta.url),'utf8');
   const branch=patch.slice(patch.indexOf("if(data.resultBundleLocation==='main_results'"),patch.indexOf('direct = normalizeEntries',patch.indexOf("if(data.resultBundleLocation==='main_results'")));
   assert.match(branch,/readPublicSnapshotBackup\('overall-results'\)/);assert.doesNotMatch(branch,/readDirectPublicSnapshot|\.collection\(/);
+});
+
+test('root client bounds reject mobile overflow-expanded inner dimensions',()=>{
+ const f=fixture({width:535,height:949,visualHeight:948,rootWidth:440,rootHeight:780,useContainer:false});
+ assert.equal(f.properties['--sq-available-width'],'440px');assert.equal(f.properties['--sq-available-height'],'780px');f.dispose();
 });
