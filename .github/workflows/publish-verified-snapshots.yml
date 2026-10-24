@@ -155,3 +155,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Sync public ranked snapshots"
           node tools/push-public-capture.mjs
+
+  publish_cdn_release:
+    needs: sync
+    if: needs.sync.result == 'success'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-cdn-release.yml

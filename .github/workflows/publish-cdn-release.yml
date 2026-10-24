@@ -1,0 +1,36 @@
+name: Publish CDN release
+
+on:
+  push:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.repository == 'StaticQuasar931/PolyTrack-0.6.3-Ranked' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: polytrack-cdn-release-${{ github.repository }}
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      # This runs after capture pushes, not against the caller's older checkout.
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Test CDN publication safeguards
+        run: node --test tools/publish-cdn-release.test.mjs
+      - name: Validate immutable assets, publish pointer, and confirm CDN refresh
+        env:
+          DEFAULT_BRANCH: main
+        run: node tools/publish-cdn-release.mjs

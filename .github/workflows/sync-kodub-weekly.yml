@@ -47,3 +47,10 @@ jobs:
           git add events/kodub
           git commit -m "Sync Kodub weekly fallback"
           node tools/push-public-capture.mjs
+
+  publish_cdn_release:
+    needs: sync
+    if: needs.sync.result == 'success'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-cdn-release.yml
