@@ -98,7 +98,7 @@ export function combineKodubCard(document, group, selection, now=Date.now()) {
   if(!card.classList.contains('sq-kodub-weekly'))card.classList.add('sq-kodub-weekly');
   const button=card.querySelector(':scope > button');
   if (button && !button.querySelector('.sq-kodub-label')) {
-    const label=document.createElement('small');label.className='sq-kodub-label';label.textContent='WEEKLY SPOTLIGHT';
+    const label=document.createElement('small');label.className='sq-kodub-label';label.textContent='WEEKLY TRACK';
     button.prepend(label);
   }
 }
