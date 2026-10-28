@@ -1086,5 +1086,6 @@ html body .track-info-ui .leaderboard-ui > .button-wrapper:has(> [data-personal-
 /* Announce recalculation provenance without consuming leaderboard space. */
 .overall-snapshot-notice{position:absolute!important;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;pointer-events:none}
 
-/* Hide the bottom update-available line without removing other track information. */
-html body #polytrackTrackFreshness .track-data-update{display:none!important}
+/* Hide the entire bottom update-available notice. */
+html body #polytrackTrackFreshness{display:none!important;visibility:hidden!important;pointer-events:none!important}
+html body #polytrackTrackFreshness *{display:none!important}
